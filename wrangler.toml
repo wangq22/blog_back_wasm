@@ -9,3 +9,22 @@ command = "cargo install -q worker-build && worker-build --release"
 binding = "DB"
 database_name = "blog"
 database_id = "4dfcc240-c8d4-4ee8-93c2-1870beb6e6bf"
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+
+[[routes]]
+pattern = "blog-api.charlie-cloud.me/*"
+zone_name = "charlie-cloud.me"

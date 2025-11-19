@@ -296,14 +296,30 @@ pub async fn delete_post(
     Path(id): Path<i32>,
 ) -> impl IntoResponse {
     let db = env.d1("DB").unwrap();
-    let delete_result = db
-        .prepare("DELETE FROM posts where _id = ?1")
+    // First delete related tag mappings to satisfy foreign key constraint
+    let delete_tags_result = db
+        .prepare("DELETE FROM post_tags WHERE post_id = ?1")
         .bind(&[id.into()])
         .unwrap()
         .run()
         .await;
 
-    match delete_result {
+    if let Err(err) = delete_tags_result {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(format!("delete failed: {}", err)),
+        )
+            .into_response();
+    }
+
+    let delete_post_result = db
+        .prepare("DELETE FROM posts WHERE _id = ?1")
+        .bind(&[id.into()])
+        .unwrap()
+        .run()
+        .await;
+
+    match delete_post_result {
         Ok(_) => (StatusCode::OK, Json("delete ok")).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,

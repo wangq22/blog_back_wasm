@@ -17,7 +17,6 @@ struct Claims {
     sub: String,
     exp: usize,
     iss: String,
-    aud: Option<Vec<String>>,
     preferred_username: Option<String>,
 }
 
@@ -80,10 +79,15 @@ pub async fn auth_middleware(req: Request<Body>, next: Next) -> Result<Response,
         sub: _sub,
         exp: _exp,
         iss: _iss,
-        aud: _aud,
         preferred_username: _preferred_username,
     } = decode::<Claims>(token, &decoding_key, &validation)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "Token validation failed").into_response())?
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                format!("Token validation failed: {:?} ({:?})", e, e.kind()),
+            )
+                .into_response()
+        })?
         .claims;
 
     Ok(next.run(req).await)
