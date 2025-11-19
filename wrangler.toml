@@ -1,0 +1,11 @@
+name = "blog_back_wasm"
+main = "build/index.js"
+compatibility_date = "2025-10-09"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "blog"
+database_id = "4dfcc240-c8d4-4ee8-93c2-1870beb6e6bf"
