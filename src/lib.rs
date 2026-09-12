@@ -8,7 +8,9 @@ use worker::{Context, Env, HttpRequest, Result};
 use http::Method;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::midware::auth_middleware::auth_middleware;
+use std::sync::Arc;
+
+use crate::midware::auth_middleware::{auth_middleware, CfAccessConfig};
 use crate::route::archive::get_by_class;
 use crate::route::category::{add_category, get_all_category};
 use crate::route::post::{add_post, delete_post, get_all_posts, get_post_detail, update_post};
@@ -41,13 +43,18 @@ pub fn router(env: Env) -> Router {
         .route("/search/{keyword}", get(search))
         .route("/category", get(get_all_category));
 
+    let cf_cfg = Arc::new(
+        CfAccessConfig::from_env(&env)
+            .expect("Missing Cloudflare Access env: set CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_CLIENT_ID"),
+    );
+
     let protected_routes = Router::new()
         .route("/post", post(add_post))
         .route("/post/{id}", delete(delete_post))
         .route("/post", put(update_post))
         .route("/category", post(add_category))
         .route("/tag", post(add_tag))
-        .layer(middleware::from_fn(auth_middleware));
+        .layer(middleware::from_fn_with_state(cf_cfg, auth_middleware));
 
     Router::new()
         .nest("/api", public_routes)

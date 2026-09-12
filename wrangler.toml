@@ -25,6 +25,10 @@ enabled = false
 persist = true
 head_sampling_rate = 1
 
+[vars]
+CF_ACCESS_TEAM_DOMAIN = "https://charlie-cloud.cloudflareaccess.com"
+CF_ACCESS_CLIENT_ID = "855e4e617b2110b36a0b1a7b603c74544cc68521294630394ef999f4e576c3e6"
+
 [[routes]]
 pattern = "blog-api.charlie-cloud.me/*"
 zone_name = "charlie-cloud.me"
