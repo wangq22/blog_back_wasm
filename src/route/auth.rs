@@ -46,31 +46,75 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-/// 把 Access 的 HTML 错误页提炼成可读文本(去标签/压空白)。
+/// 去掉 <head> 头部噪音(内联 CSS/SVG 极大,真实信息在 body),只留 body 部分。
+fn body_slice(html: &str) -> &str {
+    let lower = html.to_ascii_lowercase();
+    if let Some(pos) = lower.find("</head>") {
+        &html[pos + "</head>".len()..]
+    } else {
+        html
+    }
+}
+
+/// 把 Access 的 HTML 错误页提炼成可读文本(去 head/script/style/标签,压空白)。
 fn html_to_text(html: &str) -> String {
-    let mut out = String::with_capacity(html.len().min(2048));
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                out.push(' ');
+    let frag = body_slice(html);
+    let lower = frag.to_ascii_lowercase();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < frag.len() {
+        if lower[i..].starts_with("<script") {
+            match lower[i..].find("</script>") {
+                Some(end) => {
+                    i += end + "</script>".len();
+                    out.push(' ');
+                    continue;
+                }
+                None => break,
             }
-            _ if !in_tag => out.push(c),
-            _ => {}
         }
+        if lower[i..].starts_with("<style") {
+            match lower[i..].find("</style>") {
+                Some(end) => {
+                    i += end + "</style>".len();
+                    out.push(' ');
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let c = frag[i..].chars().next().unwrap();
+        if c == '<' {
+            match frag[i..].find('>') {
+                Some(end) => {
+                    i += end + 1;
+                    out.push(' ');
+                    continue;
+                }
+                None => break,
+            }
+        }
+        out.push(c);
+        i += c.len_utf8();
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// 全文分块打到 Worker 日志(Cloudflare 单条日志装不下整页,分 ~3000 字一块)。
+/// 只取 body 部分,最多 60k 字,避免极端页面刷屏。
 #[cfg(target_arch = "wasm32")]
-fn log_upstream(prefix: &str, body: &str) {
-    worker::console_log!("{}: {}", prefix, truncate(body.trim(), 4000));
+fn log_upstream_full(body: &str) {
+    let frag = body_slice(body.trim());
+    let chars: Vec<char> = frag.chars().take(60_000).collect();
+    let total = chars.len().div_ceil(3000).max(1);
+    for (i, chunk) in chars.chunks(3000).enumerate() {
+        let s: String = chunk.iter().collect();
+        worker::console_log!("upstream_html[{}/{}]: {}", i + 1, total, s);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn log_upstream(_prefix: &str, _body: &str) {}
+fn log_upstream_full(_body: &str) {}
 
 async fn proxy_token(
     state: &AuthState,
@@ -119,7 +163,7 @@ async fn proxy_token(
     let trimmed = body.trim();
     let is_json = trimmed.starts_with('{');
     if !status.is_success() || !is_json {
-        log_upstream("Access token endpoint raw response", &body);
+        log_upstream_full(&body);
         if is_json {
             return Err((
                 StatusCode::BAD_GATEWAY,
