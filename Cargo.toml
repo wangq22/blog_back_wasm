@@ -17,7 +17,10 @@ serde_json = "1"
 time = { version = "0.3", features = ["serde", "parsing", "formatting"] }
 reqwest = { version = "0.13", features = ["json", "form"] }
 tower-http = {version = "0.7", features = ["cors"]}
-jsonwebtoken = { version = "11"}
+# v11 必须显式开 rust_crypto(纯 Rust,wasm 可用)或 aws_lc_rs 二选一,
+# 否则 decode() 走默认空 provider 直接 panic(见 crypto::CryptoProvider::from_crate_features)。
+# aws_lc_rs 含 C/asm,不支持 wasm32-unknown-unknown,故选 rust_crypto。
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 reqwest-wasm = "0.11"
 
 # jsonwebtoken 10+ 走 RustCrypto(rand/getrandom),wasm32 目标需开启 js 后端,
