@@ -39,12 +39,38 @@ pub struct RefreshRequest {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n {
+    if s.chars().count() <= n {
         s.to_string()
     } else {
-        format!("{}…", &s[..n])
+        format!("{}…", s.chars().take(n).collect::<String>())
     }
 }
+
+/// 把 Access 的 HTML 错误页提炼成可读文本(去标签/压空白)。
+fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len().min(2048));
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn log_upstream(prefix: &str, body: &str) {
+    worker::console_log!("{}: {}", prefix, truncate(body.trim(), 4000));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn log_upstream(_prefix: &str, _body: &str) {}
 
 async fn proxy_token(
     state: &AuthState,
@@ -87,17 +113,44 @@ async fn proxy_token(
             format!("Read token response failed: {}", e),
         )
     })?;
-    if !status.is_success() {
+    // 注意:此端点报 grant 错误时返回 302(redirect_uri?error=...)而非 JSON;
+    // 在 wasm 下 fetch 会自动跟随跳转,最终拿到的是 blog 回调页 HTML。
+    // 只要不是 JSON,一律按 HTML/异常处理,提炼可读信息。
+    let trimmed = body.trim();
+    let is_json = trimmed.starts_with('{');
+    if !status.is_success() || !is_json {
+        log_upstream("Access token endpoint raw response", &body);
+        if is_json {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "Access rejected token request ({}): {}",
+                    status.as_u16(),
+                    truncate(trimmed, 500)
+                ),
+            ));
+        }
+        let text = html_to_text(trimmed);
+        if status.is_server_error() {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "Access 换 token 时内部错误 ({}): {}",
+                    status.as_u16(),
+                    truncate(&text, 800)
+                ),
+            ));
+        }
         return Err((
             StatusCode::BAD_GATEWAY,
             format!(
-                "Access rejected token request ({}): {}",
+                "Access 未返回 token ({}): {}。code 可能已使用/过期,请重新登录再试",
                 status.as_u16(),
-                truncate(body.trim(), 500)
+                truncate(&text, 300)
             ),
         ));
     }
-    serde_json::from_str(&body).map_err(|e| {
+    serde_json::from_str(trimmed).map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("Invalid token response: {}", e),
