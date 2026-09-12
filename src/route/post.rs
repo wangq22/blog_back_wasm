@@ -60,6 +60,25 @@ async fn r2_text(env: &Env, key: &str) -> Result<String, String> {
         .map_err(|e| format!("R2 read failed: {}", e))
 }
 
+/// 增/改/删文章成功后触发 Pages 重建。
+/// hook URL 配在 secret `PAGES_DEPLOY_HOOK_URL`(Pages Build Hook),未配则静默跳过;
+/// hook 本身失败只打日志,绝不影响主流程的响应。
+async fn trigger_pages_rebuild(env: &Env) {
+    let url = match env.var("PAGES_DEPLOY_HOOK_URL") {
+        Ok(v) => v.to_string(),
+        Err(_) => return,
+    };
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return;
+    }
+    match reqwest::Client::new().post(url).send().await {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => eprintln!("pages rebuild hook returned {}", r.status()),
+        Err(e) => eprintln!("pages rebuild hook failed: {}", e),
+    }
+}
+
 fn check_keys(content_key: &str, cover_key: &Option<String>) -> Result<(String, String), (StatusCode, String)> {
     let content_key = content_key.trim().to_string();
     if content_key.is_empty() || !check_key(&content_key) {
@@ -299,6 +318,7 @@ pub async fn add_post(
         )
             .into_response();
     }
+    trigger_pages_rebuild(&env).await;
     (StatusCode::OK, Json(json!({ "id": post_id }))).into_response()
 }
 
@@ -357,6 +377,7 @@ pub async fn update_post(
         )
             .into_response();
     }
+    trigger_pages_rebuild(&env).await;
     (StatusCode::OK, Json("update ok")).into_response()
 }
 
@@ -421,5 +442,6 @@ pub async fn delete_post(
             }
         }
     }
+    trigger_pages_rebuild(&env).await;
     (StatusCode::OK, Json("delete ok")).into_response()
 }

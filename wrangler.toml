@@ -37,6 +37,9 @@ CF_ACCESS_CLIENT_ID = "612762ea6875a634e1649d59b64a46be4b79f3929f8ca149e5f7eb7cb
 # 机密客户端 secret(绝对不要写进明文 vars,用命令设置):
 #   npx wrangler secret put CF_ACCESS_CLIENT_SECRET
 # 不设则 /api/auth/* 走纯 PKCE 公开客户端模式,两种都兼容
+# 前端 Pages 重建钩子(Pages 项目 > Settings > Builds & deployments > Build hooks 建一个):
+#   npx wrangler secret put PAGES_DEPLOY_HOOK_URL
+# 增/改/删文章成功后 Worker 会 POST 它触发重建;不设则不触发(本地开发可不设)
 
 [[routes]]
 pattern = "blog-api.charlie-cloud.me/*"
