@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod auth;
 pub mod category;
+pub mod media;
 pub mod post;
 pub mod search;
 pub mod tags;

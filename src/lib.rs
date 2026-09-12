@@ -14,6 +14,7 @@ use crate::midware::auth_middleware::{auth_middleware, CfAccessConfig};
 use crate::route::archive::get_by_class;
 use crate::route::auth::{exchange, refresh, AuthState};
 use crate::route::category::{add_category, get_all_category};
+use crate::route::media::{delete_media, get_media, upload_media};
 use crate::route::post::{add_post, delete_post, get_all_posts, get_post_detail, update_post};
 use crate::route::search::search;
 use crate::route::tags::{add_tag, get_tags};
@@ -42,7 +43,9 @@ pub fn router(env: Env) -> Router {
         .route("/post/{id}", get(get_post_detail))
         .route("/archive", get(get_by_class))
         .route("/search/{keyword}", get(search))
-        .route("/category", get(get_all_category));
+        .route("/category", get(get_all_category))
+        // R2 公开读(无需登录):/api/media/covers/xxx /api/media/posts/yyy.md
+        .route("/media/{*key}", get(get_media));
 
     let cf_cfg = Arc::new(
         CfAccessConfig::from_env(&env)
@@ -68,6 +71,9 @@ pub fn router(env: Env) -> Router {
         .route("/post", put(update_post))
         .route("/category", post(add_category))
         .route("/tag", post(add_tag))
+        // R2 中转上传/删除(需 Access 登录)
+        .route("/media", post(upload_media))
+        .route("/media", delete(delete_media))
         .layer(middleware::from_fn_with_state(cf_cfg, auth_middleware));
 
     Router::new()

@@ -24,6 +24,9 @@ CREATE TABLE posts (
     category TEXT,
     cover_image TEXT,
     content TEXT,
+    -- R2 keys:正文 markdown 与封面图存 R2,D1 只存 key(老数据的 content/cover_image 保留做兼容)
+    content_key TEXT,
+    cover_key TEXT,
     word_count INTEGER,
     read_time INTEGER
 );

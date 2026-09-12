@@ -10,6 +10,12 @@ binding = "DB"
 database_name = "blog"
 database_id = "4dfcc240-c8d4-4ee8-93c2-1870beb6e6bf"
 
+# R2:封面图 + 文章 markdown
+# 上线前执行一次: npx wrangler r2 bucket create blog-media
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "blog-media"
+
 [observability]
 enabled = false
 head_sampling_rate = 1
