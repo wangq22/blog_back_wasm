@@ -49,7 +49,7 @@ pub fn router(env: Env) -> Router {
             .expect("Missing Cloudflare Access env: set CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_CLIENT_ID"),
     );
 
-    // BFF 登录代换(公开接口):secret 只在 Worker 侧出现,没配则走纯 PKCE 模式
+    // BFF 登录代换(公开接口):client secret 只在 Worker 侧出现,通过 wrangler secret 注入
     let auth_state = AuthState {
         cfg: Arc::clone(&cf_cfg),
         client_secret: env

@@ -3,13 +3,13 @@
 //! 背景:Cloudflare Access SaaS OIDC 的 `/token` 端点不返回 CORS 头,
 //! 浏览器 SPA 无法直接完成 code→token 交换(表现为 CORS blocked,真实错误被盖住)。
 //! 因此 code 交换与 refresh 都由 Worker 服务端代发(无 CORS 限制),浏览器只跟同源可控的
-//! 本 API 打交道(本 API 的 CORS 已全开)。
+//! 本 API 打交道(本 API 的 CORS 已全开)。Worker 作为机密客户端使用 Access client secret,
+//! 前端不保存 client secret,也不走 PKCE。
 //!
-//! - POST /api/auth/exchange {code, code_verifier, redirect_uri} -> Access token 响应原样
+//! - POST /api/auth/exchange {code, redirect_uri} -> Access token 响应原样
 //! - POST /api/auth/refresh  {refresh_token}                     -> Access token 响应原样
 //!
-//! 机密客户端模式:如配了 `CF_ACCESS_CLIENT_SECRET`(wrangler secret,禁止进明文 vars),
-//! 代换时会自动带上 secret;没配则走纯 PKCE 公开客户端模式,两种都兼容。
+//! `CF_ACCESS_CLIENT_SECRET` 必须通过 wrangler secret 配置,禁止写进明文 vars。
 
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,7 +29,6 @@ pub struct AuthState {
 #[derive(Debug, Deserialize)]
 pub struct ExchangeRequest {
     code: String,
-    code_verifier: String,
     redirect_uri: String,
 }
 
@@ -207,10 +206,10 @@ pub async fn exchange(
     State(state): State<AuthState>,
     Json(req): Json<ExchangeRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if req.code.is_empty() || req.code_verifier.is_empty() || req.redirect_uri.is_empty() {
+    if req.code.is_empty() || req.redirect_uri.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            "code / code_verifier / redirect_uri required".to_string(),
+            "code / redirect_uri required".to_string(),
         ));
     }
     let v = proxy_token(
@@ -219,7 +218,6 @@ pub async fn exchange(
             ("grant_type", "authorization_code".to_string()),
             ("code", req.code),
             ("redirect_uri", req.redirect_uri),
-            ("code_verifier", req.code_verifier),
         ],
     )
     .await?;
