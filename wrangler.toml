@@ -28,6 +28,9 @@ head_sampling_rate = 1
 [vars]
 CF_ACCESS_TEAM_DOMAIN = "https://charlie-cloud.cloudflareaccess.com"
 CF_ACCESS_CLIENT_ID = "855e4e617b2110b36a0b1a7b603c74544cc68521294630394ef999f4e576c3e6"
+# 机密客户端 secret(绝对不要写进明文 vars,用命令设置):
+#   npx wrangler secret put CF_ACCESS_CLIENT_SECRET
+# 不设则 /api/auth/* 走纯 PKCE 公开客户端模式,两种都兼容
 
 [[routes]]
 pattern = "blog-api.charlie-cloud.me/*"

@@ -58,6 +58,10 @@ impl CfAccessConfig {
             issuer,
         })
     }
+
+    pub fn token_url(&self) -> String {
+        format!("{}/token", self.issuer)
+    }
 }
 
 #[derive(Debug, Deserialize)]

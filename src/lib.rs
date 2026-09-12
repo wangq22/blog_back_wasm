@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::midware::auth_middleware::{auth_middleware, CfAccessConfig};
 use crate::route::archive::get_by_class;
+use crate::route::auth::{exchange, refresh, AuthState};
 use crate::route::category::{add_category, get_all_category};
 use crate::route::post::{add_post, delete_post, get_all_posts, get_post_detail, update_post};
 use crate::route::search::search;
@@ -48,6 +49,19 @@ pub fn router(env: Env) -> Router {
             .expect("Missing Cloudflare Access env: set CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_CLIENT_ID"),
     );
 
+    // BFF 登录代换(公开接口):secret 只在 Worker 侧出现,没配则走纯 PKCE 模式
+    let auth_state = AuthState {
+        cfg: Arc::clone(&cf_cfg),
+        client_secret: env
+            .var("CF_ACCESS_CLIENT_SECRET")
+            .ok()
+            .map(|v| v.to_string()),
+    };
+    let auth_routes = Router::new()
+        .route("/auth/exchange", post(exchange))
+        .route("/auth/refresh", post(refresh))
+        .with_state(auth_state);
+
     let protected_routes = Router::new()
         .route("/post", post(add_post))
         .route("/post/{id}", delete(delete_post))
@@ -58,6 +72,7 @@ pub fn router(env: Env) -> Router {
 
     Router::new()
         .nest("/api", public_routes)
+        .nest("/api", auth_routes)
         .nest("/api/protected", protected_routes)
         .layer(Extension(SendWrapper::new(env)))
         .layer(cors)
