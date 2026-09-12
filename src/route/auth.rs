@@ -115,6 +115,28 @@ fn log_upstream_full(body: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 fn log_upstream_full(_body: &str) {}
 
+/// 从 Access 的 OAuth 错误重定向中提取安全的错误字段,不把完整 Location(可能含 code)暴露出去。
+fn oauth_redirect_details(location: Option<&str>) -> String {
+    let Some(location) = location else {
+        return "no Location header".to_string();
+    };
+    let Some((_, query)) = location.split_once('?') else {
+        return "redirect without OAuth query".to_string();
+    };
+    let mut fields = Vec::new();
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if matches!(key, "error" | "error_description" | "error_uri") {
+            fields.push(format!("{}={}", key, truncate(value, 500)));
+        }
+    }
+    if fields.is_empty() {
+        "redirect without OAuth error fields".to_string()
+    } else {
+        fields.join("&")
+    }
+}
+
 async fn proxy_token(
     state: &AuthState,
     params: Vec<(&str, String)>,
@@ -150,6 +172,8 @@ async fn proxy_token(
             )
         })?;
     let status = res.status();
+    // reqwest-wasm 会自动跟随 302;保存最终 URL,以便从 callback?error=... 提取真实原因。
+    let final_url = res.url().as_str().to_string();
     let body = res.text().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
@@ -163,6 +187,21 @@ async fn proxy_token(
     let is_json = trimmed.starts_with('{');
     if !status.is_success() || !is_json {
         log_upstream_full(&body);
+        let followed_oauth_error = if final_url.contains("?error=")
+            || final_url.contains("&error=")
+        {
+            Some(oauth_redirect_details(Some(&final_url)))
+        } else {
+            None
+        };
+        if let Some(details) = followed_oauth_error {
+            #[cfg(target_arch = "wasm32")]
+            worker::console_log!("upstream_oauth_redirect_final: {}", details);
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("Access OAuth error after redirect: {}", details),
+            ));
+        }
         if is_json {
             return Err((
                 StatusCode::BAD_GATEWAY,
