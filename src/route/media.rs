@@ -10,7 +10,7 @@
 //! Key 规范:
 //! - 封面: `covers/<ts>-<hash>-<safe-name>`
 //! - 正文: `posts/<ts>-<hash>-<safe-name>.md`
-//! D1 只存 key(`content_key`/`cover_key`),见 `migrations/0002_r2_keys.sql`。
+//! D1 只存 key(`content_key`/`cover_key`),见 `migrations/0003_drop_legacy_columns.sql`。
 
 use axum::{
     body::Bytes,

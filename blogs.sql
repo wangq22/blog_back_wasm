@@ -16,15 +16,13 @@ CREATE TABLE category(
     name TEXT UNIQUE,
     post_count INTEGER
 );
+-- D1 只存 R2 key,正文 markdown 与封面图全在 R2(不兼容老 content/cover_image 列)
 CREATE TABLE posts (
     _id INTEGER PRIMARY KEY,
     title TEXT,
     excerpt TEXT,
     date TEXT,
     category TEXT,
-    cover_image TEXT,
-    content TEXT,
-    -- R2 keys:正文 markdown 与封面图存 R2,D1 只存 key(老数据的 content/cover_image 保留做兼容)
     content_key TEXT,
     cover_key TEXT,
     word_count INTEGER,
@@ -52,29 +50,8 @@ VALUES (
         'Charlie Wang',
         'Full-stack developer, RISC-V processor enthusiast, self-hosting enthusiast, DevOps enthusiast',
         'https://avatars.githubusercontent.com/u/180044640?v=4',
-        'https://github.com/WangQiHao-Charlie',
+        'https://github.com/wangq22',
         'https://space.bilibili.com/660065958'
-    );
-INSERT INTO posts (
-        title,
-        excerpt,
-        date,
-        category,
-        content,
-        cover_image,
-        word_count,
-        read_time
-    )
-VALUES (
-        'Build a modern Blog with React and Cloudflare Worker-rs',
-        'This blog described the architecture of my blog',
-        '2025-10-09T13:45:00Z',
-        'front end',
-        '# Build a blog 
-        This is an example of blog content',
-        'https://fuwari.vercel.app/_astro/cover.CgGywNHJ_9MQNr.webp',
-        1024,
-        5
     );
 INSERT INTO tags (name, color_class)
 VALUES ('Rust', 'info_badge');
@@ -84,13 +61,5 @@ INSERT INTO tags (name, color_class)
 VALUES ('React', 'info_badge');
 INSERT INTO tags (name, color_class)
 VALUES ('Vite', 'info_badge');
-INSERT INTO post_tags (post_id, tag_id)
-VALUES (1, 1);
-INSERT INTO post_tags (post_id, tag_id)
-VALUES (1, 2);
-INSERT INTO post_tags (post_id, tag_id)
-VALUES (1, 3);
-INSERT INTO post_tags (post_id, tag_id)
-VALUES (1, 4);
 INSERT INTO category (_id, name, post_count)
-VALUES (1, 'Front End', 1)
+VALUES (1, 'Front End', 0)
