@@ -8,14 +8,19 @@ authors = ["Charlie Wang <wang.18083@buckeyemail.osu.edu>"]
 crate-type = ["cdylib"]
 
 [dependencies]
-worker = { version = "0.6", features = ['http', 'axum', "d1"] }
-worker-macros = { version = "0.6", features = ['http'] }
+worker = { version = "0.8", features = ['http', 'axum', "d1"] }
+worker-macros = { version = "0.8", features = ['http'] }
 axum = { version = "0.8", default-features = false, features = ["macros", "json", "query"] }
-tower-service = "0.3.3"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-time = { version = "0.3.36", features = ["serde", "parsing", "formatting"] }
-reqwest = { version = "0.12", features = ["json"] }
-tower-http = {version = "0.6.6", features = ["cors"]}
-jsonwebtoken = { version = "9"}
+tower-service = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["serde", "parsing", "formatting"] }
+reqwest = { version = "0.13", features = ["json"] }
+tower-http = {version = "0.7", features = ["cors"]}
+jsonwebtoken = { version = "11"}
 reqwest-wasm = "0.11"
+
+# jsonwebtoken 10+ 走 RustCrypto(rand/getrandom),wasm32 目标需开启 js 后端,
+# 否则编译 getrandom 0.2 会报 "wasm*-unknown-unknown targets are not supported"
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
