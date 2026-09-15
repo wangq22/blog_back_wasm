@@ -9,7 +9,11 @@ CREATE TABLE user (
     bio TEXT,
     avatar_url TEXT,
     github_url TEXT,
-    bilibili_url TEXT
+    bilibili_url TEXT,
+    timezone TEXT,
+    city TEXT,
+    email TEXT,
+    affiliation TEXT
 );
 CREATE TABLE category(
     _id INTEGER PRIMARY KEY,

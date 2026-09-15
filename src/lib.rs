@@ -18,7 +18,7 @@ use crate::route::media::{delete_media, get_media, upload_media};
 use crate::route::post::{add_post, delete_post, get_all_posts, get_post_detail, update_post};
 use crate::route::search::search;
 use crate::route::tags::{add_tag, get_tags};
-use crate::route::user::userinfo;
+use crate::route::user::{update_user, userinfo};
 
 mod midware;
 mod model;
@@ -71,6 +71,8 @@ pub fn router(env: Env) -> Router {
         .route("/post", put(update_post))
         .route("/category", post(add_category))
         .route("/tag", post(add_tag))
+        // 站长资料更新(资料页预渲染,成功后同样触发 Pages 重建)
+        .route("/user", put(update_user))
         // R2 中转上传/删除(需 Access 登录)
         .route("/media", post(upload_media))
         .route("/media", delete(delete_media))

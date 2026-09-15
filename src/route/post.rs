@@ -63,7 +63,8 @@ async fn r2_text(env: &Env, key: &str) -> Result<String, String> {
 /// 增/改/删文章成功后触发 Pages 重建。
 /// hook URL 配在 secret `PAGES_DEPLOY_HOOK_URL`(Pages Build Hook),未配则静默跳过;
 /// hook 本身失败只打日志,绝不影响主流程的响应。
-async fn trigger_pages_rebuild(env: &Env) {
+/// 用户资料页同样预渲染,改资料时复用此钩子(见 route::user::update_user)。
+pub(crate) async fn trigger_pages_rebuild(env: &Env) {
     let url = match env.var("PAGES_DEPLOY_HOOK_URL") {
         Ok(v) => v.to_string(),
         Err(_) => return,
