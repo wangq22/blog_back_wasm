@@ -2,6 +2,12 @@ name = "blog_back_wasm"
 main = "build/index.js"
 compatibility_date = "2025-10-09"
 
+[ai]
+binding = "AI"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
@@ -34,6 +40,11 @@ head_sampling_rate = 1
 [vars]
 CF_ACCESS_TEAM_DOMAIN = "https://charlie-cloud.cloudflareaccess.com"
 CF_ACCESS_CLIENT_ID = "612762ea6875a634e1649d59b64a46be4b79f3929f8ca149e5f7eb7cb7957373"
+# Account-backed Workers AI model used by the schedule planner.
+SCHEDULE_AI_MODEL = "@cf/deepseek-ai/deepseek-v4-flash-0731"
+# Local offset for the Ann Arbor timetable. Update this when the semester
+# crosses a daylight-saving boundary.
+SCHEDULE_UTC_OFFSET = "-04:00"
 # 机密客户端 secret(绝对不要写进明文 vars,用命令设置):
 #   npx wrangler secret put CF_ACCESS_CLIENT_SECRET
 # 不设则 /api/auth/* 走纯 PKCE 公开客户端模式,两种都兼容

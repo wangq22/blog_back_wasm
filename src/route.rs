@@ -3,6 +3,7 @@ pub mod auth;
 pub mod category;
 pub mod media;
 pub mod post;
+pub mod schedule;
 pub mod search;
 pub mod tags;
 pub mod user;

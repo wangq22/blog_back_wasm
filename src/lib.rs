@@ -16,6 +16,9 @@ use crate::route::auth::{exchange, refresh, AuthState};
 use crate::route::category::{add_category, get_all_category};
 use crate::route::media::{delete_media, get_media, upload_media};
 use crate::route::post::{add_post, delete_post, get_all_posts, get_post_detail, update_post};
+use crate::route::schedule::{
+    add_reaction, add_task, get_reviews, list_public_tasks, refresh_learning_endpoint, save_review,
+};
 use crate::route::search::search;
 use crate::route::tags::{add_tag, get_tags};
 use crate::route::user::{update_user, userinfo};
@@ -44,13 +47,15 @@ pub fn router(env: Env) -> Router {
         .route("/archive", get(get_by_class))
         .route("/search/{keyword}", get(search))
         .route("/category", get(get_all_category))
+        .route("/schedule/tasks", get(list_public_tasks))
+        .route("/schedule/tasks/{id}/reactions", post(add_reaction))
         // R2 公开读(无需登录):/api/media/covers/xxx /api/media/posts/yyy.md
         .route("/media/{*key}", get(get_media));
 
-    let cf_cfg = Arc::new(
-        CfAccessConfig::from_env(&env)
-            .expect("Missing Cloudflare Access env: set CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_CLIENT_ID"),
-    );
+    let cf_cfg =
+        Arc::new(CfAccessConfig::from_env(&env).expect(
+            "Missing Cloudflare Access env: set CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_CLIENT_ID",
+        ));
 
     // BFF 登录代换(公开接口):client secret 只在 Worker 侧出现,通过 wrangler secret 注入
     let auth_state = AuthState {
@@ -76,6 +81,10 @@ pub fn router(env: Env) -> Router {
         // R2 中转上传/删除(需 Access 登录)
         .route("/media", post(upload_media))
         .route("/media", delete(delete_media))
+        .route("/schedule/tasks", post(add_task))
+        .route("/schedule/reviews", get(get_reviews))
+        .route("/schedule/reviews/{id}", post(save_review))
+        .route("/schedule/learning", post(refresh_learning_endpoint))
         .layer(middleware::from_fn_with_state(cf_cfg, auth_middleware));
 
     Router::new()
@@ -84,6 +93,11 @@ pub fn router(env: Env) -> Router {
         .nest("/api/protected", protected_routes)
         .layer(Extension(SendWrapper::new(env)))
         .layer(cors)
+}
+
+#[worker::event(scheduled)]
+pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::ScheduleContext) {
+    crate::route::schedule::schedule_tick(&env).await;
 }
 
 #[worker::event(fetch)]
