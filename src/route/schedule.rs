@@ -12,7 +12,7 @@ use time::{
     format_description::well_known::Rfc3339, Date, Duration, OffsetDateTime, PrimitiveDateTime,
     Time, UtcOffset, Weekday,
 };
-use worker::{send::SendWrapper, Ai, D1Database, Env};
+use worker::{send::SendWrapper, Ai, D1Database, Date as WorkerDate, Env};
 
 const DEFAULT_AI_MODEL: &str = "@cf/deepseek-ai/deepseek-v4-flash-0731";
 const MAX_TASK_MINUTES: i32 = 240;
@@ -142,8 +142,16 @@ struct Plan {
     used_ai: bool,
 }
 
+fn now_utc() -> OffsetDateTime {
+    // `time::OffsetDateTime::now_utc()` reaches `SystemTime::now()`, which
+    // panics in Cloudflare Workers' wasm runtime. Workers exposes the clock
+    // through the JavaScript Date API instead.
+    OffsetDateTime::from_unix_timestamp_nanos(WorkerDate::now().as_millis() as i128 * 1_000_000)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+}
+
 fn now_iso() -> String {
-    OffsetDateTime::now_utc()
+    now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
@@ -242,7 +250,7 @@ fn local_time(date: Date, minutes: i32, offset: UtcOffset) -> OffsetDateTime {
 
 fn class_intervals(env: &Env, days: i64) -> Vec<Interval> {
     let offset = parse_utc_offset(env);
-    let local_today = OffsetDateTime::now_utc().to_offset(offset).date();
+    let local_today = now_utc().to_offset(offset).date();
     let mut intervals = Vec::new();
     for day_offset in 0..days {
         let date = local_today + Duration::days(day_offset);
@@ -287,7 +295,7 @@ fn next_available_slot(
     existing: &[Interval],
 ) -> Plan {
     let offset = parse_utc_offset(env);
-    let now = OffsetDateTime::now_utc();
+    let now = now_utc();
     let local_now = now.to_offset(offset);
     let duration = duration_minutes.clamp(30, MAX_TASK_MINUTES);
     let class_busy = class_intervals(env, 21);
@@ -345,7 +353,7 @@ fn minutes_label(minutes: i32) -> String {
 
 fn class_context(env: &Env) -> String {
     let offset = parse_utc_offset(env);
-    let local_today = OffsetDateTime::now_utc().to_offset(offset).date();
+    let local_today = now_utc().to_offset(offset).date();
     let mut lines = Vec::new();
     for day_offset in 0..14_i64 {
         let date = local_today + Duration::days(day_offset);
@@ -471,7 +479,7 @@ async fn ai_plan(
     if end <= start
         || duration < 30
         || duration > MAX_TASK_MINUTES
-        || start <= OffsetDateTime::now_utc() - Duration::minutes(5)
+        || start <= now_utc() - Duration::minutes(5)
         || deadline.map(|limit| end > limit).unwrap_or(false)
     {
         return None;
@@ -944,7 +952,7 @@ pub async fn save_review(
             .filter(|value| !value.trim().is_empty())
             .and_then(parse_iso)
         {
-            Some(start) if start > OffsetDateTime::now_utc() => start,
+            Some(start) if start > now_utc() => start,
             _ => {
                 let existing = active_task_intervals(&db).await;
                 next_available_slot(&env, estimate, None, &existing).start
