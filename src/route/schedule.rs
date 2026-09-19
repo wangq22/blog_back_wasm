@@ -219,6 +219,12 @@ fn value_i32(row: &Value, key: &str) -> i32 {
     value_i64(row, key).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
+fn d1_id(value: i64) -> worker::wasm_bindgen::JsValue {
+    // D1 accepts JavaScript Numbers for SQLite integer parameters. Passing an
+    // i64 directly creates a JavaScript BigInt, which D1 rejects at bind time.
+    worker::wasm_bindgen::JsValue::from_f64(value as f64)
+}
+
 fn row_interval(row: &Value) -> Option<Interval> {
     Some(Interval {
         start: parse_iso(&value_string(row, "scheduled_start"))?,
@@ -523,7 +529,7 @@ async fn public_task_with_reactions(db: &D1Database, row: &Value) -> Value {
     let id = value_i64(row, "_id");
     let reaction_rows = match db
         .prepare("SELECT emoji, count FROM schedule_reactions WHERE task_id = ?1 ORDER BY count DESC, emoji ASC")
-        .bind(&[id.into()])
+        .bind(&[d1_id(id)])
     {
         Ok(statement) => statement
             .all()
@@ -645,7 +651,7 @@ pub async fn add_task(
                 .into_response()
         }
     };
-    let result = match db
+    let insert = match db
         .prepare(
             "INSERT INTO schedule_tasks
              (title, notes, scheduled_start, scheduled_end, estimated_minutes, status, ai_reason, ai_model, created_at, updated_at)
@@ -661,12 +667,25 @@ pub async fn add_task(
             model.clone().into(),
             now.into(),
         ])
-        .unwrap()
-        .run()
-        .await
     {
+        Ok(statement) => statement,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let result = match insert.run().await {
         Ok(result) => result,
-        Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": error.to_string() }))).into_response(),
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
     };
     let id = result
         .meta()
@@ -674,10 +693,20 @@ pub async fn add_task(
         .flatten()
         .and_then(|meta| meta.last_row_id)
         .unwrap_or_default();
-    let row = db
+    let select = match db
         .prepare("SELECT _id, title, scheduled_start, scheduled_end, estimated_minutes, status, ai_reason FROM schedule_tasks WHERE _id = ?1")
-        .bind(&[id.into()])
-        .unwrap()
+        .bind(&[d1_id(id)])
+    {
+        Ok(statement) => statement,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let row = select
         .first::<Value>(None)
         .await
         .ok()
@@ -724,7 +753,7 @@ pub async fn add_reaction(
     };
     let exists = match db
         .prepare("SELECT _id FROM schedule_tasks WHERE _id = ?1 AND status IN ('planned', 'in_progress', 'awaiting_review')")
-        .bind(&[task_id.into()])
+        .bind(&[d1_id(task_id)])
     {
         Ok(statement) => statement.first::<Value>(None).await.ok().flatten().is_some(),
         Err(_) => false,
@@ -736,31 +765,41 @@ pub async fn add_reaction(
         )
             .into_response();
     }
-    if let Err(error) = db
+    let insert = match db
         .prepare(
             "INSERT INTO schedule_reactions (task_id, emoji, count) VALUES (?1, ?2, 1)
              ON CONFLICT(task_id, emoji) DO UPDATE SET count = count + 1",
         )
-        .bind(&[task_id.into(), payload.emoji.into()])
-        .unwrap()
-        .run()
-        .await
+        .bind(&[d1_id(task_id), payload.emoji.into()])
     {
+        Ok(statement) => statement,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    if let Err(error) = insert.run().await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": error.to_string() })),
         )
             .into_response();
     }
-    let reaction_rows = db
+    let reaction_rows = match db
         .prepare("SELECT emoji, count FROM schedule_reactions WHERE task_id = ?1 ORDER BY count DESC, emoji ASC")
-        .bind(&[task_id.into()])
-        .unwrap()
-        .all()
-        .await
-        .ok()
-        .and_then(|result| result.results::<Value>().ok())
-        .unwrap_or_default();
+        .bind(&[d1_id(task_id)])
+    {
+        Ok(statement) => statement
+            .all()
+            .await
+            .ok()
+            .and_then(|result| result.results::<Value>().ok())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
     (StatusCode::OK, Json(json!({ "reactions": reaction_rows }))).into_response()
 }
 
@@ -921,7 +960,7 @@ pub async fn save_review(
              FROM schedule_task_reviews r JOIN schedule_tasks t ON t._id = r.task_id
              WHERE r._id = ?1 AND r.status = 'pending'",
         )
-        .bind(&[review_id.into()])
+        .bind(&[d1_id(review_id)])
     {
         Ok(statement) => statement,
         Err(_) => {
@@ -962,7 +1001,7 @@ pub async fn save_review(
     } else {
         None
     };
-    if let Err(error) = db
+    let review_update = match db
         .prepare(
             "UPDATE schedule_task_reviews
              SET status = ?1, outcome = ?1, spent_minutes = ?2, summary = ?3, reviewed_at = ?4
@@ -973,12 +1012,18 @@ pub async fn save_review(
             payload.spent_minutes.into(),
             payload.summary.trim().to_string().into(),
             now.clone().into(),
-            review_id.into(),
-        ])
-        .unwrap()
-        .run()
-        .await
-    {
+            d1_id(review_id),
+        ]) {
+        Ok(statement) => statement,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    if let Err(error) = review_update.run().await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": error.to_string() })),
@@ -986,7 +1031,7 @@ pub async fn save_review(
             .into_response();
     }
     let task_update = match next {
-        Some((start, end)) => db
+        Some((start, end)) => match db
             .prepare(
                 "UPDATE schedule_tasks SET status = 'planned', scheduled_start = ?1, scheduled_end = ?2,
                  actual_minutes = ?3, completion_summary = ?4, updated_at = ?5 WHERE _id = ?6",
@@ -997,12 +1042,13 @@ pub async fn save_review(
                 payload.spent_minutes.into(),
                 payload.summary.trim().to_string().into(),
                 now.clone().into(),
-                task_id.into(),
+                d1_id(task_id),
             ])
-            .unwrap()
-            .run()
-            .await,
-        None if payload.outcome == "completed" => db
+        {
+            Ok(statement) => statement.run().await,
+            Err(error) => Err(error),
+        },
+        None if payload.outcome == "completed" => match db
             .prepare(
                 "UPDATE schedule_tasks SET status = 'done', actual_minutes = ?1, completion_summary = ?2, updated_at = ?3 WHERE _id = ?4",
             )
@@ -1010,12 +1056,13 @@ pub async fn save_review(
                 payload.spent_minutes.into(),
                 payload.summary.trim().to_string().into(),
                 now.clone().into(),
-                task_id.into(),
+                d1_id(task_id),
             ])
-            .unwrap()
-            .run()
-            .await,
-        None => db
+        {
+            Ok(statement) => statement.run().await,
+            Err(error) => Err(error),
+        },
+        None => match db
             .prepare(
                 "UPDATE schedule_tasks SET status = 'skipped', actual_minutes = ?1, completion_summary = ?2, updated_at = ?3 WHERE _id = ?4",
             )
@@ -1023,11 +1070,12 @@ pub async fn save_review(
                 payload.spent_minutes.into(),
                 payload.summary.trim().to_string().into(),
                 now.clone().into(),
-                task_id.into(),
+                d1_id(task_id),
             ])
-            .unwrap()
-            .run()
-            .await,
+        {
+            Ok(statement) => statement.run().await,
+            Err(error) => Err(error),
+        },
     };
     if let Err(error) = task_update {
         return (
