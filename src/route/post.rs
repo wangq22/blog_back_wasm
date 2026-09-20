@@ -80,7 +80,10 @@ pub(crate) async fn trigger_pages_rebuild(env: &Env) {
     }
 }
 
-fn check_keys(content_key: &str, cover_key: &Option<String>) -> Result<(String, String), (StatusCode, String)> {
+fn check_keys(
+    content_key: &str,
+    cover_key: &Option<String>,
+) -> Result<(String, String), (StatusCode, String)> {
     let content_key = content_key.trim().to_string();
     if content_key.is_empty() || !check_key(&content_key) {
         return Err((StatusCode::BAD_REQUEST, "invalid content_key".to_string()));

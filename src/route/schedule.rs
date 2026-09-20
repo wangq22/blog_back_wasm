@@ -27,7 +27,7 @@ struct ClassSlot {
     end_minutes: i32,
 }
 
-// Monday = 0. This is the normalized form of class_schedule.jpg.
+// Monday = 0. Normalized from the archived semester timetable reference.
 const CLASS_SCHEDULE: [ClassSlot; 12] = [
     ClassSlot {
         weekday: 0,

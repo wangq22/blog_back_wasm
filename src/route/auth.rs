@@ -18,7 +18,7 @@ use std::time::Duration;
 use axum::{extract::State, http::StatusCode, Json};
 use serde::Deserialize;
 
-use crate::midware::auth_middleware::CfAccessConfig;
+use crate::middleware::auth_middleware::CfAccessConfig;
 
 #[derive(Debug, Clone)]
 pub struct AuthState {
@@ -145,14 +145,12 @@ async fn proxy_token(
     let builder = reqwest::Client::builder();
     #[cfg(not(target_arch = "wasm32"))]
     let builder = builder.timeout(Duration::from_secs(10));
-    let client = builder.build().map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("HTTP client error: {}", e),
-        )
-    })?;
+    let client = builder
+        .build()
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("HTTP client error: {}", e)))?;
 
-    let mut form: Vec<(String, String)> = vec![("client_id".to_string(), state.cfg.audience.clone())];
+    let mut form: Vec<(String, String)> =
+        vec![("client_id".to_string(), state.cfg.audience.clone())];
     for (k, v) in params {
         form.push((k.to_string(), v));
     }
@@ -187,8 +185,7 @@ async fn proxy_token(
     let is_json = trimmed.starts_with('{');
     if !status.is_success() || !is_json {
         log_upstream_full(&body);
-        let followed_oauth_error = if final_url.contains("?error=")
-            || final_url.contains("&error=")
+        let followed_oauth_error = if final_url.contains("?error=") || final_url.contains("&error=")
         {
             Some(oauth_redirect_details(Some(&final_url)))
         } else {

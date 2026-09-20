@@ -1,5 +1,13 @@
 {
-  "dependencies": {
+  "name": "blog-worker-tooling",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "worker-build --release",
+    "deploy": "wrangler deploy",
+    "test": "cargo test"
+  },
+  "devDependencies": {
     "wrangler": "^4.131.1"
   }
 }

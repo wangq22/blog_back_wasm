@@ -85,7 +85,12 @@ fn ext_of(name: &str) -> String {
 
 fn content_type_for(kind: &str, filename: &str, header_ct: Option<&str>) -> String {
     if let Some(ct) = header_ct {
-        let ct = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        let ct = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         if !ct.is_empty() && ct.contains('/') && !ct.contains("multipart") {
             // 封面只允许图片,正文只允许文本,防止把可执行文件顶着图片头存进去
             let ok = if kind == "cover" {
@@ -142,10 +147,7 @@ fn validate(kind: &str, filename: &str, len: usize) -> Result<(), (StatusCode, S
         }
     } else {
         if len > MAX_CONTENT_BYTES {
-            return Err((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "markdown > 2MB".to_string(),
-            ));
+            return Err((StatusCode::PAYLOAD_TOO_LARGE, "markdown > 2MB".to_string()));
         }
         let ext = ext_of(filename);
         if !matches!(ext.as_str(), "md" | "markdown" | "txt" | "") {
@@ -282,37 +284,26 @@ pub async fn get_media(
     let obj = match bucket.get(key.clone()).execute().await {
         Ok(o) => o,
         Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("R2 get failed: {}", e),
-            )
-                .into_response()
+            return (StatusCode::BAD_GATEWAY, format!("R2 get failed: {}", e)).into_response()
         }
     };
     let Some(obj) = obj else {
         return (StatusCode::NOT_FOUND, "media not found".to_string()).into_response();
     };
-    let ct = obj
-        .http_metadata()
-        .content_type
-        .unwrap_or_else(|| {
-            if key.ends_with(".md") {
-                "text/markdown; charset=utf-8".to_string()
-            } else {
-                "application/octet-stream".to_string()
-            }
-        });
+    let ct = obj.http_metadata().content_type.unwrap_or_else(|| {
+        if key.ends_with(".md") {
+            "text/markdown; charset=utf-8".to_string()
+        } else {
+            "application/octet-stream".to_string()
+        }
+    });
     let Some(wbody) = obj.body() else {
         return (StatusCode::NOT_FOUND, "media empty".to_string()).into_response();
     };
     let bytes = match wbody.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("R2 read failed: {}", e),
-            )
-                .into_response()
+            return (StatusCode::BAD_GATEWAY, format!("R2 read failed: {}", e)).into_response()
         }
     };
     let mut headers = HeaderMap::new();
@@ -338,7 +329,10 @@ pub async fn delete_media(
 ) -> impl IntoResponse {
     let key = q.key.unwrap_or_default();
     if !check_key(&key) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid key" })))
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid key" })),
+        )
             .into_response();
     }
     let bucket = match env.bucket("MEDIA") {

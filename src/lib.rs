@@ -1,5 +1,5 @@
 use axum::routing::{delete, post, put};
-use axum::{http, middleware};
+use axum::{http, middleware as axum_middleware};
 use axum::{routing::get, Extension, Router};
 use tower_service::Service;
 use worker::send::SendWrapper;
@@ -10,15 +10,15 @@ use tower_http::cors::{Any, CorsLayer};
 
 use std::sync::Arc;
 
-use crate::midware::auth_middleware::{auth_middleware, CfAccessConfig};
+use crate::middleware::auth_middleware::{auth_middleware, CfAccessConfig};
 use crate::route::archive::get_by_class;
 use crate::route::auth::{exchange, refresh, AuthState};
 use crate::route::category::{add_category, get_all_category};
-use crate::route::media::{delete_media, get_media, upload_media};
 use crate::route::mcp::{
     authorization_server_metadata, mcp_endpoint, oauth_authorize_get, oauth_authorize_post,
     oauth_token, protected_resource_metadata,
 };
+use crate::route::media::{delete_media, get_media, upload_media};
 use crate::route::post::{add_post, delete_post, get_all_posts, get_post_detail, update_post};
 use crate::route::schedule::{
     add_reaction, add_task, delete_task, get_learning, get_reviews, list_owner_tasks,
@@ -28,7 +28,7 @@ use crate::route::search::search;
 use crate::route::tags::{add_tag, get_tags};
 use crate::route::user::{update_user, userinfo};
 
-mod midware;
+mod middleware;
 mod model;
 mod route;
 
@@ -77,7 +77,10 @@ pub fn router(env: Env) -> Router {
 
     let mcp_routes = Router::new()
         .route("/mcp", post(mcp_endpoint))
-        .route("/oauth/authorize", get(oauth_authorize_get).post(oauth_authorize_post))
+        .route(
+            "/oauth/authorize",
+            get(oauth_authorize_get).post(oauth_authorize_post),
+        )
         .route("/oauth/token", post(oauth_token))
         .route(
             "/.well-known/oauth-protected-resource",
@@ -111,7 +114,7 @@ pub fn router(env: Env) -> Router {
             "/schedule/learning",
             get(get_learning).post(refresh_learning_endpoint),
         )
-        .layer(middleware::from_fn_with_state(cf_cfg, auth_middleware));
+        .layer(axum_middleware::from_fn_with_state(cf_cfg, auth_middleware));
 
     Router::new()
         .merge(mcp_routes)
