@@ -45,9 +45,18 @@ SCHEDULE_AI_MODEL = "@cf/deepseek-ai/deepseek-v4-flash-0731"
 # Local offset for the Ann Arbor timetable. Update this when the semester
 # crosses a daylight-saving boundary.
 SCHEDULE_UTC_OFFSET = "-04:00"
+# Streamable HTTP MCP endpoint and its OAuth issuer.
+MCP_ISSUER = "https://blog-api.charlie-cloud.me"
+MCP_RESOURCE_URL = "https://blog-api.charlie-cloud.me/mcp"
+# Owner label used in opaque MCP token records. It is not a credential.
+MCP_OWNER_EMAIL = "owner"
 # 机密客户端 secret(绝对不要写进明文 vars,用命令设置):
 #   npx wrangler secret put CF_ACCESS_CLIENT_SECRET
 # 不设则 /api/auth/* 走纯 PKCE 公开客户端模式,两种都兼容
+# MCP OAuth owner approval secret(不要写进 vars):
+#   npx wrangler secret put MCP_OWNER_SECRET
+# 可选的静态 bearer token,供本地脚本/接口测试使用:
+#   npx wrangler secret put MCP_BEARER_TOKEN
 # 前端 Pages 重建钩子(Pages 项目 > Settings > Builds & deployments > Build hooks 建一个):
 #   npx wrangler secret put PAGES_DEPLOY_HOOK_URL
 # 增/改/删文章成功后 Worker 会 POST 它触发重建;不设则不触发(本地开发可不设)

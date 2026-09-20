@@ -163,6 +163,7 @@ dependencies = [
  "reqwest-wasm",
  "serde",
  "serde_json",
+ "sha2",
  "time",
  "tower-http 0.7.1",
  "tower-service",

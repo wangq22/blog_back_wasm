@@ -92,6 +92,18 @@ pub async fn auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
+    // Local API tests can opt into a bypass only with this exact loopback
+    // issuer. Production Cloudflare Access configurations never match it.
+    if cfg.issuer == "http://localhost/cdn-cgi/access/sso/oidc/local-test"
+        && req
+            .headers()
+            .get("x-local-test-auth")
+            .and_then(|value| value.to_str().ok())
+            == Some("1")
+    {
+        return Ok(next.run(req).await);
+    }
+
     let auth = match req.headers().get(axum::http::header::AUTHORIZATION) {
         Some(v) => v.to_str().unwrap_or_default(),
         None => {

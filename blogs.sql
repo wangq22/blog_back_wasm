@@ -72,6 +72,7 @@ CREATE TABLE schedule_tasks (
     _id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     notes TEXT NOT NULL DEFAULT '',
+    deadline TEXT NOT NULL DEFAULT '',
     scheduled_start TEXT NOT NULL,
     scheduled_end TEXT NOT NULL,
     estimated_minutes INTEGER NOT NULL,
@@ -110,3 +111,27 @@ CREATE TABLE schedule_learning (
     ai_model TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
+CREATE TABLE mcp_oauth_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX mcp_oauth_codes_expiry ON mcp_oauth_codes(expires_at);
+CREATE TABLE mcp_oauth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    token_type TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX mcp_oauth_tokens_lookup
+    ON mcp_oauth_tokens(token_type, expires_at, revoked_at);

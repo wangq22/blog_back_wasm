@@ -113,6 +113,19 @@ pub struct TaskCreateDTO {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct TaskUpdateDTO {
+    pub title: String,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub deadline: Option<String>,
+    #[serde(default)]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub replan: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ReviewDTO {
     pub outcome: String,
     #[serde(default)]
@@ -274,18 +287,36 @@ fn class_intervals(env: &Env, days: i64) -> Vec<Interval> {
     intervals
 }
 
-async fn active_task_intervals(db: &D1Database) -> Vec<Interval> {
-    let rows = match db
-        .prepare(
-            "SELECT scheduled_start, scheduled_end
-             FROM schedule_tasks
-             WHERE status IN ('planned', 'in_progress')",
-        )
-        .all()
-        .await
-    {
-        Ok(result) => result.results::<Value>().unwrap_or_default(),
-        Err(_) => Vec::new(),
+async fn active_task_intervals(db: &D1Database, exclude_task_id: Option<i64>) -> Vec<Interval> {
+    let rows = match exclude_task_id {
+        Some(task_id) => match db
+            .prepare(
+                "SELECT scheduled_start, scheduled_end
+                 FROM schedule_tasks
+                 WHERE status IN ('planned', 'in_progress') AND _id != ?1",
+            )
+            .bind(&[d1_id(task_id)])
+        {
+            Ok(statement) => statement
+                .all()
+                .await
+                .ok()
+                .and_then(|result| result.results::<Value>().ok())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
+        None => match db
+            .prepare(
+                "SELECT scheduled_start, scheduled_end
+                 FROM schedule_tasks
+                 WHERE status IN ('planned', 'in_progress')",
+            )
+            .all()
+            .await
+        {
+            Ok(result) => result.results::<Value>().unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
     };
     rows.iter().filter_map(row_interval).collect()
 }
@@ -513,12 +544,17 @@ async fn ai_plan(
     })
 }
 
-async fn plan_task(env: &Env, task: &TaskCreateDTO, deadline: Option<OffsetDateTime>) -> Plan {
+async fn plan_task(
+    env: &Env,
+    task: &TaskCreateDTO,
+    deadline: Option<OffsetDateTime>,
+    exclude_task_id: Option<i64>,
+) -> Plan {
     let db = match env.d1("DB") {
         Ok(db) => db,
         Err(_) => return next_available_slot(env, 60, deadline, &[]),
     };
-    let existing = active_task_intervals(&db).await;
+    let existing = active_task_intervals(&db, exclude_task_id).await;
     let learning = learning_note(&db).await;
     ai_plan(env, task, deadline, &existing, learning)
         .await
@@ -549,6 +585,47 @@ async fn public_task_with_reactions(db: &D1Database, row: &Value) -> Value {
         "ai_reason": value_string(row, "ai_reason"),
         "reactions": reaction_rows,
     })
+}
+
+fn owner_task(row: &Value) -> Value {
+    json!({
+        "id": value_i64(row, "_id"),
+        "title": value_string(row, "title"),
+        "notes": value_string(row, "notes"),
+        "deadline": value_string(row, "deadline"),
+        "scheduled_start": value_string(row, "scheduled_start"),
+        "scheduled_end": value_string(row, "scheduled_end"),
+        "estimated_minutes": value_i32(row, "estimated_minutes"),
+        "status": value_string(row, "status"),
+        "ai_reason": value_string(row, "ai_reason"),
+        "ai_model": value_string(row, "ai_model"),
+        "actual_minutes": row.get("actual_minutes").cloned().unwrap_or(Value::Null),
+        "completion_summary": value_string(row, "completion_summary"),
+        "created_at": value_string(row, "created_at"),
+        "updated_at": value_string(row, "updated_at"),
+    })
+}
+
+async fn learning_record(db: &D1Database) -> Option<Value> {
+    match db
+        .prepare("SELECT content, ai_model, updated_at FROM schedule_learning WHERE _id = 1")
+        .first::<Value>(None)
+        .await
+    {
+        Ok(Some(row)) => {
+            let content = value_string(&row, "content");
+            if content.trim().is_empty() {
+                None
+            } else {
+                Some(json!({
+                    "content": content,
+                    "ai_model": value_string(&row, "ai_model"),
+                    "updated_at": value_string(&row, "updated_at"),
+                }))
+            }
+        }
+        _ => None,
+    }
 }
 
 async fn promote_due_tasks(env: &Env) -> Result<(), String> {
@@ -617,6 +694,47 @@ pub async fn list_public_tasks(Extension(env): Extension<SendWrapper<Env>>) -> i
 }
 
 #[worker::send]
+pub async fn list_owner_tasks(Extension(env): Extension<SendWrapper<Env>>) -> impl IntoResponse {
+    let _ = promote_due_tasks(&env).await;
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let rows = match db
+        .prepare(
+            "SELECT _id, title, notes, deadline, scheduled_start, scheduled_end, estimated_minutes,
+                    status, ai_reason, ai_model, actual_minutes, completion_summary, created_at, updated_at
+             FROM schedule_tasks
+             ORDER BY created_at DESC, _id DESC",
+        )
+        .all()
+        .await
+    {
+        Ok(result) => result.results::<Value>().unwrap_or_default(),
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let tasks = rows.iter().map(owner_task).collect::<Vec<_>>();
+    let learning = learning_record(&db).await;
+    (
+        StatusCode::OK,
+        Json(json!({ "tasks": tasks, "learning": learning })),
+    )
+        .into_response()
+}
+
+#[worker::send]
 pub async fn add_task(
     Extension(env): Extension<SendWrapper<Env>>,
     Json(payload): Json<TaskCreateDTO>,
@@ -638,7 +756,8 @@ pub async fn add_task(
         },
         _ => None,
     };
-    let plan = plan_task(&env, &payload, deadline).await;
+    let plan = plan_task(&env, &payload, deadline, None).await;
+    let deadline_text = deadline.map(format_iso).unwrap_or_default();
     let now = now_iso();
     let model = ai_model(&env);
     let db = match env.d1("DB") {
@@ -654,12 +773,13 @@ pub async fn add_task(
     let insert = match db
         .prepare(
             "INSERT INTO schedule_tasks
-             (title, notes, scheduled_start, scheduled_end, estimated_minutes, status, ai_reason, ai_model, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'planned', ?6, ?7, ?8, ?8)",
+             (title, notes, deadline, scheduled_start, scheduled_end, estimated_minutes, status, ai_reason, ai_model, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'planned', ?7, ?8, ?9, ?9)",
         )
         .bind(&[
             title.to_string().into(),
             payload.notes.trim().to_string().into(),
+            deadline_text.into(),
             format_iso(plan.start).into(),
             format_iso(plan.end).into(),
             plan.minutes.into(),
@@ -725,6 +845,234 @@ pub async fn add_task(
         })),
     )
         .into_response()
+}
+
+#[worker::send]
+pub async fn update_task(
+    Extension(env): Extension<SendWrapper<Env>>,
+    Path(task_id): Path<i64>,
+    Json(payload): Json<TaskUpdateDTO>,
+) -> impl IntoResponse {
+    let title = payload.title.trim();
+    if title.is_empty() || title.len() > 160 || payload.notes.len() > 1000 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "title is required (160 chars max) and notes must be 1000 chars max" })),
+        )
+            .into_response();
+    }
+    let deadline = match payload.deadline.as_deref() {
+        Some(value) if !value.trim().is_empty() => match parse_iso(value) {
+            Some(date) => Some(date),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "deadline must be an RFC3339 timestamp" })),
+                )
+                    .into_response()
+            }
+        },
+        _ => None,
+    };
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let current_statement = match db
+        .prepare(
+            "SELECT _id, title, notes, deadline, scheduled_start, scheduled_end, estimated_minutes,
+                    status, ai_reason, ai_model, actual_minutes, completion_summary, created_at, updated_at
+             FROM schedule_tasks WHERE _id = ?1",
+        )
+        .bind(&[d1_id(task_id)])
+    {
+        Ok(statement) => statement,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let current = match current_statement.first::<Value>(None).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "task not found" })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    let status = value_string(&current, "status");
+    let can_replan = matches!(status.as_str(), "planned" | "in_progress");
+    let mut scheduled_start = value_string(&current, "scheduled_start");
+    let mut scheduled_end = value_string(&current, "scheduled_end");
+    let mut estimated_minutes = value_i32(&current, "estimated_minutes");
+    let mut ai_reason = value_string(&current, "ai_reason");
+    let mut ai_model_value = value_string(&current, "ai_model");
+    let mut used_ai = false;
+
+    if payload.replan && can_replan {
+        let task_for_planner = TaskCreateDTO {
+            title: title.to_string(),
+            notes: payload.notes.trim().to_string(),
+            deadline: payload.deadline.clone(),
+            timezone: payload.timezone.clone(),
+        };
+        let plan = plan_task(&env, &task_for_planner, deadline, Some(task_id)).await;
+        scheduled_start = format_iso(plan.start);
+        scheduled_end = format_iso(plan.end);
+        estimated_minutes = plan.minutes;
+        ai_reason = plan.reason;
+        ai_model_value = ai_model(&env);
+        used_ai = plan.used_ai;
+    }
+
+    let deadline_text = deadline.map(format_iso).unwrap_or_default();
+    let now = now_iso();
+    let update = match db
+        .prepare(
+            "UPDATE schedule_tasks
+             SET title = ?1, notes = ?2, deadline = ?3, scheduled_start = ?4, scheduled_end = ?5,
+                 estimated_minutes = ?6, ai_reason = ?7, ai_model = ?8, updated_at = ?9
+             WHERE _id = ?10",
+        )
+        .bind(&[
+            title.to_string().into(),
+            payload.notes.trim().to_string().into(),
+            deadline_text.clone().into(),
+            scheduled_start.clone().into(),
+            scheduled_end.clone().into(),
+            estimated_minutes.into(),
+            ai_reason.clone().into(),
+            ai_model_value.clone().into(),
+            now.clone().into(),
+            d1_id(task_id),
+        ]) {
+        Ok(statement) => statement,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    if let Err(error) = update.run().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response();
+    }
+
+    let task = json!({
+        "id": task_id,
+        "title": title,
+        "notes": payload.notes.trim(),
+        "deadline": deadline_text,
+        "scheduled_start": scheduled_start,
+        "scheduled_end": scheduled_end,
+        "estimated_minutes": estimated_minutes,
+        "status": status,
+        "ai_reason": ai_reason,
+        "ai_model": ai_model_value,
+        "actual_minutes": current.get("actual_minutes").cloned().unwrap_or(Value::Null),
+        "completion_summary": value_string(&current, "completion_summary"),
+        "created_at": value_string(&current, "created_at"),
+        "updated_at": now,
+    });
+    (
+        StatusCode::OK,
+        Json(json!({
+            "task": task,
+            "ai": { "used": used_ai, "reason": task.get("ai_reason") },
+        })),
+    )
+        .into_response()
+}
+
+#[worker::send]
+pub async fn delete_task(
+    Extension(env): Extension<SendWrapper<Env>>,
+    Path(task_id): Path<i64>,
+) -> impl IntoResponse {
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let exists = match db
+        .prepare("SELECT _id FROM schedule_tasks WHERE _id = ?1")
+        .bind(&[d1_id(task_id)])
+    {
+        Ok(statement) => statement
+            .first::<Value>(None)
+            .await
+            .ok()
+            .flatten()
+            .is_some(),
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    if !exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "task not found" })),
+        )
+            .into_response();
+    }
+
+    for query in [
+        "DELETE FROM schedule_task_reviews WHERE task_id = ?1",
+        "DELETE FROM schedule_reactions WHERE task_id = ?1",
+        "DELETE FROM schedule_tasks WHERE _id = ?1",
+    ] {
+        let statement = match db.prepare(query).bind(&[d1_id(task_id)]) {
+            Ok(statement) => statement,
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": error.to_string() })),
+                )
+                    .into_response()
+            }
+        };
+        if let Err(error) = statement.run().await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
+    }
+    (StatusCode::OK, Json(json!({ "ok": true, "id": task_id }))).into_response()
 }
 
 #[worker::send]
@@ -843,12 +1191,29 @@ pub async fn get_reviews(Extension(env): Extension<SendWrapper<Env>>) -> impl In
             })
         })
         .collect::<Vec<_>>();
-    let learning = learning_note(&db)
-        .await
-        .map(|content| json!({ "content": content }));
+    let learning = learning_record(&db).await;
     (
         StatusCode::OK,
         Json(json!({ "reviews": reviews, "learning": learning })),
+    )
+        .into_response()
+}
+
+#[worker::send]
+pub async fn get_learning(Extension(env): Extension<SendWrapper<Env>>) -> impl IntoResponse {
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(json!({ "learning": learning_record(&db).await })),
     )
         .into_response()
 }
@@ -868,9 +1233,7 @@ async fn refresh_learning(env: &Env, db: &D1Database) -> Option<Value> {
         .and_then(|result| result.results::<Value>().ok())
         .unwrap_or_default();
     if rows.is_empty() {
-        return learning_note(db)
-            .await
-            .map(|content| json!({ "content": content }));
+        return learning_record(db).await;
     }
     let history = rows
         .iter()
@@ -913,7 +1276,7 @@ async fn refresh_learning(env: &Env, db: &D1Database) -> Option<Value> {
             "INSERT INTO schedule_learning (_id, content, ai_model, updated_at) VALUES (1, ?1, ?2, ?3)
              ON CONFLICT(_id) DO UPDATE SET content = excluded.content, ai_model = excluded.ai_model, updated_at = excluded.updated_at",
         )
-        .bind(&[content.clone().into(), model.into(), now.clone().into()])
+        .bind(&[content.clone().into(), model.clone().into(), now.clone().into()])
     {
         Ok(statement) => statement,
         Err(_) => return None,
@@ -921,7 +1284,7 @@ async fn refresh_learning(env: &Env, db: &D1Database) -> Option<Value> {
     if statement.run().await.is_err() {
         return None;
     }
-    Some(json!({ "content": content, "updated_at": now }))
+    Some(json!({ "content": content, "ai_model": model, "updated_at": now }))
 }
 
 #[worker::send]
@@ -993,7 +1356,7 @@ pub async fn save_review(
         {
             Some(start) if start > now_utc() => start,
             _ => {
-                let existing = active_task_intervals(&db).await;
+                let existing = active_task_intervals(&db, None).await;
                 next_available_slot(&env, estimate, None, &existing).start
             }
         };

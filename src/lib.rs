@@ -15,9 +15,14 @@ use crate::route::archive::get_by_class;
 use crate::route::auth::{exchange, refresh, AuthState};
 use crate::route::category::{add_category, get_all_category};
 use crate::route::media::{delete_media, get_media, upload_media};
+use crate::route::mcp::{
+    authorization_server_metadata, mcp_endpoint, oauth_authorize_get, oauth_authorize_post,
+    oauth_token, protected_resource_metadata,
+};
 use crate::route::post::{add_post, delete_post, get_all_posts, get_post_detail, update_post};
 use crate::route::schedule::{
-    add_reaction, add_task, get_reviews, list_public_tasks, refresh_learning_endpoint, save_review,
+    add_reaction, add_task, delete_task, get_learning, get_reviews, list_owner_tasks,
+    list_public_tasks, refresh_learning_endpoint, save_review, update_task,
 };
 use crate::route::search::search;
 use crate::route::tags::{add_tag, get_tags};
@@ -70,6 +75,23 @@ pub fn router(env: Env) -> Router {
         .route("/auth/refresh", post(refresh))
         .with_state(auth_state);
 
+    let mcp_routes = Router::new()
+        .route("/mcp", post(mcp_endpoint))
+        .route("/oauth/authorize", get(oauth_authorize_get).post(oauth_authorize_post))
+        .route("/oauth/token", post(oauth_token))
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(protected_resource_metadata),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/mcp",
+            get(protected_resource_metadata),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(authorization_server_metadata),
+        );
+
     let protected_routes = Router::new()
         .route("/post", post(add_post))
         .route("/post/{id}", delete(delete_post))
@@ -81,13 +103,18 @@ pub fn router(env: Env) -> Router {
         // R2 中转上传/删除(需 Access 登录)
         .route("/media", post(upload_media))
         .route("/media", delete(delete_media))
-        .route("/schedule/tasks", post(add_task))
+        .route("/schedule/tasks", get(list_owner_tasks).post(add_task))
+        .route("/schedule/tasks/{id}", put(update_task).delete(delete_task))
         .route("/schedule/reviews", get(get_reviews))
         .route("/schedule/reviews/{id}", post(save_review))
-        .route("/schedule/learning", post(refresh_learning_endpoint))
+        .route(
+            "/schedule/learning",
+            get(get_learning).post(refresh_learning_endpoint),
+        )
         .layer(middleware::from_fn_with_state(cf_cfg, auth_middleware));
 
     Router::new()
+        .merge(mcp_routes)
         .nest("/api", public_routes)
         .nest("/api", auth_routes)
         .nest("/api/protected", protected_routes)

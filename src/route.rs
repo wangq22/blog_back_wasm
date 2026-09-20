@@ -2,6 +2,7 @@ pub mod archive;
 pub mod auth;
 pub mod category;
 pub mod media;
+pub mod mcp;
 pub mod post;
 pub mod schedule;
 pub mod search;
