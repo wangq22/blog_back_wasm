@@ -29,6 +29,18 @@ Use a long random value for `MCP_OWNER_SECRET`. It is only entered on the
 OAuth approval page when ChatGPT first connects. The Worker stores only a
 hash of the resulting authorization codes and access/refresh tokens in D1.
 
+The schedule planner calls Cloudflare's account-level AI Gateway REST API.
+Set its Cloudflare API token separately:
+
+```sh
+npx wrangler secret put CLOUDFLARE_API_TOKEN
+```
+
+This token needs the account-level `Workers AI > Read` permission. The
+DeepSeek provider key remains configured inside AI Gateway; it is not sent by
+the Worker. `SCHEDULE_AI_MODEL` defaults to `deepseek/deepseek-chat` and can
+be changed to another `deepseek/<model>` id exposed by the gateway.
+
 In ChatGPT Developer Mode, add the `/mcp` URL. ChatGPT will discover the
 OAuth metadata, open the approval page, and then use the returned token for
 the MCP calls. Keep write-tool approval enabled so task creation, edits,

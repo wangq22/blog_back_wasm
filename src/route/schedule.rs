@@ -12,9 +12,11 @@ use time::{
     format_description::well_known::Rfc3339, Date, Duration, OffsetDateTime, PrimitiveDateTime,
     Time, UtcOffset, Weekday,
 };
-use worker::{send::SendWrapper, Ai, D1Database, Date as WorkerDate, Env};
+use worker::{send::SendWrapper, D1Database, Date as WorkerDate, Env};
 
-const DEFAULT_AI_MODEL: &str = "@cf/deepseek-ai/deepseek-v4-flash-0731";
+const DEFAULT_AI_MODEL: &str = "deepseek/deepseek-chat";
+const DEFAULT_CF_ACCOUNT_ID: &str = "29fa3816f926962a4e21a1c71db02ca9";
+const DEFAULT_AI_GATEWAY_ID: &str = "charlie-cloud";
 const MAX_TASK_MINUTES: i32 = 240;
 
 #[derive(Clone, Copy)]
@@ -209,6 +211,22 @@ fn ai_model(env: &Env) -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_AI_MODEL.to_string())
+}
+
+fn cloudflare_account_id(env: &Env) -> String {
+    env.var("CLOUDFLARE_ACCOUNT_ID")
+        .ok()
+        .map(|value| value.to_string().trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_CF_ACCOUNT_ID.to_string())
+}
+
+fn ai_gateway_id(env: &Env) -> String {
+    env.var("AI_GATEWAY_ID")
+        .ok()
+        .map(|value| value.to_string().trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_AI_GATEWAY_ID.to_string())
 }
 
 fn value_string(row: &Value, key: &str) -> String {
@@ -443,6 +461,11 @@ fn extract_ai_text(value: &Value) -> Option<String> {
     if let Some(text) = value.get("output_text").and_then(Value::as_str) {
         return Some(text.to_string());
     }
+    if let Some(result) = value.get("result") {
+        if let Some(text) = extract_ai_text(result) {
+            return Some(text);
+        }
+    }
     value
         .get("choices")
         .and_then(Value::as_array)
@@ -464,18 +487,49 @@ fn extract_json_object(text: &str) -> Option<Value> {
     serde_json::from_str::<Value>(&trimmed[start..=end]).ok()
 }
 
+fn ai_request_body(model: &str, prompt: &str, max_tokens: u32) -> Value {
+    json!({
+        "model": model,
+        "input": {
+            "messages": [
+                { "role": "system", "content": "You are a careful personal time planner. Follow the requested output format exactly." },
+                { "role": "user", "content": prompt }
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.1,
+        }
+    })
+}
+
 async fn run_ai(env: &Env, prompt: String, max_tokens: u32) -> Option<String> {
-    let ai: Ai = env.ai("AI").ok()?;
+    let api_token = env.secret("CLOUDFLARE_API_TOKEN").ok()?.to_string();
+    if api_token.trim().is_empty() {
+        return None;
+    }
+    let account_id = cloudflare_account_id(env);
+    let gateway_id = ai_gateway_id(env);
     let model = ai_model(env);
-    let input = json!({
-        "messages": [
-            { "role": "system", "content": "You are a careful personal time planner. Follow the requested output format exactly." },
-            { "role": "user", "content": prompt }
-        ],
-        "max_tokens": max_tokens,
-        "temperature": 0.1,
-    });
-    let response: Value = ai.run(model, input).await.ok()?;
+    let request_body = ai_request_body(&model, &prompt, max_tokens);
+    let endpoint = format!(
+        "https://api.cloudflare.com/client/v4/accounts/{}/ai/run",
+        account_id
+    );
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {}", api_token))
+        .header("cf-aig-gateway-id", gateway_id)
+        .json(&request_body)
+        .send()
+        .await
+        .ok()?;
+    let status = response.status();
+    let body = response.text().await.ok()?;
+    if !status.is_success() {
+        let detail = body.chars().take(800).collect::<String>();
+        worker::console_log!("AI Gateway request failed ({}): {}", status, detail);
+        return None;
+    }
+    let response = serde_json::from_str::<Value>(&body).ok()?;
     extract_ai_text(&response)
 }
 
@@ -1476,5 +1530,33 @@ pub async fn refresh_learning_endpoint(
 pub async fn schedule_tick(env: &Env) {
     if let Err(error) = promote_due_tasks(env).await {
         eprintln!("schedule tick failed: {}", error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_gateway_request_uses_universal_run_envelope() {
+        let body = ai_request_body("deepseek/deepseek-chat", "plan this", 500);
+
+        assert_eq!(body["model"], "deepseek/deepseek-chat");
+        assert_eq!(body["input"]["messages"][0]["role"], "system");
+        assert_eq!(body["input"]["messages"][1]["role"], "user");
+        assert_eq!(body["input"]["messages"][1]["content"], "plan this");
+        assert_eq!(body["input"]["max_tokens"], 500);
+    }
+
+    #[test]
+    fn ai_text_parser_handles_account_result_wrapper() {
+        let response = json!({
+            "success": true,
+            "result": {
+                "choices": [{ "message": { "content": "{}" } }]
+            }
+        });
+
+        assert_eq!(extract_ai_text(&response).as_deref(), Some("{}"));
     }
 }

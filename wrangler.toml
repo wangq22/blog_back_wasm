@@ -2,9 +2,6 @@ name = "blog_back_wasm"
 main = "build/index.js"
 compatibility_date = "2025-10-09"
 
-[ai]
-binding = "AI"
-
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -40,8 +37,11 @@ head_sampling_rate = 1
 [vars]
 CF_ACCESS_TEAM_DOMAIN = "https://charlie-cloud.cloudflareaccess.com"
 CF_ACCESS_CLIENT_ID = "612762ea6875a634e1649d59b64a46be4b79f3929f8ca149e5f7eb7cb7957373"
-# Account-backed Workers AI model used by the schedule planner.
-SCHEDULE_AI_MODEL = "@cf/deepseek-ai/deepseek-v4-flash-0731"
+# DeepSeek model routed through the account-level AI Gateway REST API.
+# Use the model id exposed by your Gateway, in author/model form.
+SCHEDULE_AI_MODEL = "deepseek/deepseek-chat"
+CLOUDFLARE_ACCOUNT_ID = "29fa3816f926962a4e21a1c71db02ca9"
+AI_GATEWAY_ID = "charlie-cloud"
 # Local offset for the Ann Arbor timetable. Update this when the semester
 # crosses a daylight-saving boundary.
 SCHEDULE_UTC_OFFSET = "-04:00"
@@ -53,6 +53,8 @@ MCP_OWNER_EMAIL = "owner"
 # 机密客户端 secret(绝对不要写进明文 vars,用命令设置):
 #   npx wrangler secret put CF_ACCESS_CLIENT_SECRET
 # 不设则 /api/auth/* 走纯 PKCE 公开客户端模式,两种都兼容
+# Account-level AI Gateway REST API token. It needs Account > Workers AI > Read.
+#   npx wrangler secret put CLOUDFLARE_API_TOKEN
 # MCP OAuth owner approval secret(不要写进 vars):
 #   npx wrangler secret put MCP_OWNER_SECRET
 # 可选的静态 bearer token,供本地脚本/接口测试使用:
