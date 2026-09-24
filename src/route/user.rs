@@ -52,36 +52,54 @@ pub async fn update_user(
     // 缺省字段沿用旧值(全 String 绑定,避开 D1 对 NULL 参数的绑定差异)。
     let clean = |v: Option<String>| v.map(|s| s.trim().to_string());
     let old = |v: Option<String>| v.unwrap_or_default();
-    let (existing_id, e_name, e_bio, e_avatar, e_github, e_bilibili, e_tz, e_city, e_email, e_aff) =
-        match existing {
-            Some(r) => (
-                Some(r._id),
-                r.name,
-                old(r.bio),
-                old(r.avatar_url),
-                old(r.github_url),
-                old(r.bilibili_url),
-                old(r.timezone),
-                old(r.city),
-                old(r.email),
-                old(r.affiliation),
-            ),
-            None => (
-                None,
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
-        };
+    let (
+        existing_id,
+        e_name,
+        e_bio,
+        e_avatar,
+        e_serious_avatar,
+        e_casual_bio,
+        e_github,
+        e_bilibili,
+        e_tz,
+        e_city,
+        e_email,
+        e_aff,
+    ) = match existing {
+        Some(r) => (
+            Some(r._id),
+            r.name,
+            old(r.bio),
+            old(r.avatar_url),
+            old(r.serious_avatar_url),
+            old(r.casual_bio),
+            old(r.github_url),
+            old(r.bilibili_url),
+            old(r.timezone),
+            old(r.city),
+            old(r.email),
+            old(r.affiliation),
+        ),
+        None => (
+            None,
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+    };
     let name = clean(payload.name).unwrap_or(e_name);
     let bio = clean(payload.bio).unwrap_or(e_bio);
     let avatar_url = clean(payload.avatar_url).unwrap_or(e_avatar);
+    let serious_avatar_url = clean(payload.serious_avatar_url).unwrap_or(e_serious_avatar);
+    let casual_bio = clean(payload.casual_bio).unwrap_or(e_casual_bio);
     let github_url = clean(payload.github_url).unwrap_or(e_github);
     let bilibili_url = clean(payload.bilibili_url).unwrap_or(e_bilibili);
     let timezone = clean(payload.timezone).unwrap_or(e_tz);
@@ -100,14 +118,17 @@ pub async fn update_user(
     // 单用户表:有行则按 _id 更新,无行则首插一行(_id 固定 1)。
     let db_result = if let Some(user_id) = existing_id {
         db.prepare(
-            "UPDATE user SET name = ?1, bio = ?2, avatar_url = ?3, github_url = ?4,
-                 bilibili_url = ?5, timezone = ?6, city = ?7, email = ?8, affiliation = ?9
-             WHERE _id = ?10",
+            "UPDATE user SET name = ?1, bio = ?2, avatar_url = ?3, serious_avatar_url = ?4,
+                 casual_bio = ?5, github_url = ?6, bilibili_url = ?7, timezone = ?8,
+                 city = ?9, email = ?10, affiliation = ?11
+             WHERE _id = ?12",
         )
         .bind(&[
             name.into(),
             bio.into(),
             avatar_url.into(),
+            serious_avatar_url.into(),
+            casual_bio.into(),
             github_url.into(),
             bilibili_url.into(),
             timezone.into(),
@@ -121,14 +142,16 @@ pub async fn update_user(
         .await
     } else {
         db.prepare(
-            "INSERT INTO user (_id, name, bio, avatar_url, github_url, bilibili_url,
-                 timezone, city, email, affiliation)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO user (_id, name, bio, avatar_url, serious_avatar_url, casual_bio,
+                 github_url, bilibili_url, timezone, city, email, affiliation)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
         .bind(&[
             name.into(),
             bio.into(),
             avatar_url.into(),
+            serious_avatar_url.into(),
+            casual_bio.into(),
             github_url.into(),
             bilibili_url.into(),
             timezone.into(),

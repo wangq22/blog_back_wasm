@@ -8,6 +8,8 @@ CREATE TABLE user (
     name TEXT,
     bio TEXT,
     avatar_url TEXT,
+    serious_avatar_url TEXT,
+    casual_bio TEXT,
     github_url TEXT,
     bilibili_url TEXT,
     timezone TEXT,

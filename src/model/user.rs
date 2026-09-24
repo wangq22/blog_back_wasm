@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// user 表整行(单用户博客,全站只有一行)。
-/// 新增 timezone/city/email/affiliation 后 GET /api/user(SELECT *) 自动带回,无需改查询。
+/// GET /api/user 使用 SELECT *,新增字段后自动带回。
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UserRow {
     pub _id: i32,
@@ -10,6 +10,10 @@ pub struct UserRow {
     pub bio: Option<String>,
     #[serde(default)]
     pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub serious_avatar_url: Option<String>,
+    #[serde(default)]
+    pub casual_bio: Option<String>,
     #[serde(default)]
     pub github_url: Option<String>,
     #[serde(default)]
@@ -34,6 +38,10 @@ pub struct UserUpdateDTO {
     pub bio: Option<String>,
     #[serde(default)]
     pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub serious_avatar_url: Option<String>,
+    #[serde(default)]
+    pub casual_bio: Option<String>,
     #[serde(default)]
     pub github_url: Option<String>,
     #[serde(default)]
