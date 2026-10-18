@@ -5,7 +5,9 @@
     "dev": "wrangler dev",
     "build": "worker-build --release",
     "deploy": "wrangler deploy",
-    "test": "cargo test"
+    "test": "cargo test",
+    "test:storage": "python3 -B -m unittest discover -s tests -p 'test_schedule_storage.py'",
+    "test:runtime": "python3 -B tests/schedule_runtime.py --isolated"
   },
   "devDependencies": {
     "wrangler": "^4.131.1"

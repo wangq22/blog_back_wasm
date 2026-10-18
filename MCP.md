@@ -7,9 +7,12 @@ https://blog-api.charlie-cloud.me/mcp
 ```
 
 It exposes `list_tasks`, `create_task`, `update_task`, `delete_task`,
-`list_reviews`, `save_review`, and `get_scheduling_experience`. `create_task`
-uses the same class-aware DeepSeek planner as `/admin/schedule`; the class
-reference remains code-only and the source timetable image is never uploaded.
+`list_reviews`, `save_review`, `get_scheduling_experience`, `get_schedule_settings`,
+`update_schedule_settings`, `replan_schedule`, and `lock_schedule_block`. AI
+assesses task parameters; the same deterministic Rust scheduler used by
+`/admin/schedule` chooses work blocks. Fixed contests keep their exact times.
+See [SCHEDULER.md](SCHEDULER.md) for migration 0009, review semantics and defaults.
+The source timetable image is never uploaded.
 
 ## First deployment
 

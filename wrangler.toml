@@ -42,9 +42,8 @@ CF_ACCESS_CLIENT_ID = "612762ea6875a634e1649d59b64a46be4b79f3929f8ca149e5f7eb7cb
 SCHEDULE_AI_MODEL = "deepseek/deepseek-chat"
 CLOUDFLARE_ACCOUNT_ID = "29fa3816f926962a4e21a1c71db02ca9"
 AI_GATEWAY_ID = "charlie-cloud"
-# Local offset for the Ann Arbor timetable. Update this when the semester
-# crosses a daylight-saving boundary.
-SCHEDULE_UTC_OFFSET = "-04:00"
+# Calendar timezone, availability and energy are versioned in D1 schedule_state.
+# Default: America/Detroit, with date-specific daylight-saving offsets.
 # Streamable HTTP MCP endpoint and its OAuth issuer.
 MCP_ISSUER = "https://blog-api.charlie-cloud.me"
 MCP_RESOURCE_URL = "https://blog-api.charlie-cloud.me/mcp"

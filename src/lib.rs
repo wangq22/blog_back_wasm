@@ -31,6 +31,7 @@ use crate::route::user::{update_user, userinfo};
 mod middleware;
 mod model;
 mod route;
+mod scheduler;
 
 pub fn router(env: Env) -> Router {
     let cors = CorsLayer::new()
@@ -53,6 +54,10 @@ pub fn router(env: Env) -> Router {
         .route("/search/{keyword}", get(search))
         .route("/category", get(get_all_category))
         .route("/schedule/tasks", get(list_public_tasks))
+        .route(
+            "/schedule/config",
+            get(crate::route::schedule::public_config),
+        )
         .route("/schedule/tasks/{id}/reactions", post(add_reaction))
         // R2 公开读(无需登录):/api/media/covers/xxx /api/media/posts/yyy.md
         .route("/media/{*key}", get(get_media));
@@ -107,6 +112,15 @@ pub fn router(env: Env) -> Router {
         .route("/media", post(upload_media))
         .route("/media", delete(delete_media))
         .route("/schedule/tasks", get(list_owner_tasks).post(add_task))
+        .route(
+            "/schedule/settings",
+            get(crate::route::schedule::get_settings).put(crate::route::schedule::save_settings),
+        )
+        .route("/schedule/replan", post(crate::route::schedule::replan))
+        .route(
+            "/schedule/blocks/{id}",
+            put(crate::route::schedule::lock_block),
+        )
         .route("/schedule/tasks/{id}", put(update_task).delete(delete_task))
         .route("/schedule/reviews", get(get_reviews))
         .route("/schedule/reviews/{id}", post(save_review))

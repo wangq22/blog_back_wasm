@@ -16,7 +16,9 @@ wrangler.toml              # Worker、D1、R2、Cron 与公开变量配置
 MCP.md                     # MCP / OAuth 接入说明
 ```
 
-`blogs.sql` 是完整数据库结构参考；线上变更应通过 `migrations/` 中的增量 SQL 执行。
+`blogs.sql` 是基础数据库结构参考；线上变更应通过 `migrations/` 中的增量 SQL 执行。
+
+日历使用独立的确定性 Rust 排程器：LLM 只评估任务参数和提出限幅校准建议。工作块、复盘、配置、MCP 接口以及部署前必须执行的 0009 迁移见 [SCHEDULER.md](SCHEDULER.md)。
 
 ## 开发与验证
 

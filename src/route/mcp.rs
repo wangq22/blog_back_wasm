@@ -879,83 +879,39 @@ fn rpc_error(id: Value, code: i32, message: &str) -> Value {
 }
 
 fn tool_definitions() -> Vec<Value> {
-    vec![
-        json!({
-            "name": "list_tasks",
-            "description": "List the private schedule todo tasks, including their AI-selected time blocks and current status.",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
-            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
-        }),
-        json!({
-            "name": "create_task",
-            "description": "Create a private todo task. The existing schedule planner uses the class timetable, active tasks, deadlines, and previous scheduling experience before choosing a time.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string", "description": "A concise task title." },
-                    "notes": { "type": "string", "description": "Optional context or acceptance criteria." },
-                    "deadline": { "type": "string", "description": "Optional RFC3339 deadline, for example 2026-09-25T23:59:00-04:00." },
-                    "timezone": { "type": "string", "description": "Optional IANA timezone label used as context for scheduling." },
-                },
-                "required": ["title"],
-                "additionalProperties": false,
-            },
-            "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false },
-        }),
-        json!({
-            "name": "update_task",
-            "description": "Update a private todo task. Set replan to true when its time block should be selected again around classes and other tasks.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "integer" },
-                    "title": { "type": "string" },
-                    "notes": { "type": "string" },
-                    "deadline": { "type": "string" },
-                    "timezone": { "type": "string" },
-                    "replan": { "type": "boolean" },
-                },
-                "required": ["id", "title"],
-                "additionalProperties": false,
-            },
-            "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false },
-        }),
-        json!({
-            "name": "delete_task",
-            "description": "Delete a private todo task and its review/reaction records.",
-            "inputSchema": { "type": "object", "properties": { "id": { "type": "integer" } }, "required": ["id"], "additionalProperties": false },
-            "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false },
-        }),
-        json!({
-            "name": "list_reviews",
-            "description": "List tasks whose scheduled time has passed and are waiting for a completion/defer/skip decision.",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
-            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
-        }),
-        json!({
-            "name": "save_review",
-            "description": "Record whether a due task was completed, deferred, or skipped. The existing Worker will update the task and refresh the AI scheduling experience.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "review_id": { "type": "integer" },
-                    "outcome": { "type": "string", "enum": ["completed", "deferred", "skipped"] },
-                    "spent_minutes": { "type": "integer", "minimum": 0, "maximum": 1440 },
-                    "summary": { "type": "string", "description": "One or two sentences about what happened." },
-                    "next_start": { "type": "string", "description": "Optional RFC3339 time when a deferred task should resume." },
-                },
-                "required": ["review_id", "outcome"],
-                "additionalProperties": false,
-            },
-            "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false },
-        }),
-        json!({
-            "name": "get_scheduling_experience",
-            "description": "Read the AI-generated previous scheduling experience before discussing or creating another task.",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
-            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
-        }),
-    ]
+    let mut definitions = vec![
+        json!({"name":"list_tasks","description":"List private tasks, persisted AI assessments, deterministic work blocks, waiting reasons and calendar revision.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"create_task","description":"Create a task. AI assesses parameters; deterministic code schedules it. Use mode=fixed with exact fixed_start/fixed_end for contests or appointments. An unschedulable task is saved with a waiting reason.","inputSchema":{"type":"object","properties":{},"required":["title"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"update_task","description":"Edit a task. Scheduling changes replan flexible future work, protecting locked blocks and the next two hours. replan reuses the stored assessment; reassess explicitly calls AI again. Clear deadline with an empty string.","inputSchema":{"type":"object","properties":{},"required":["id","title"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"delete_task","description":"Delete a task and its blocks, reviews and reactions, then replan future work.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}}),
+        json!({"name":"list_reviews","description":"List elapsed work blocks awaiting reflection, with their block IDs and the calendar revision.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"save_review","description":"Reflect on one work block. Send block_id and task_completed explicitly. Unfinished flexible tasks require remaining_minutes: actual minutes are not progress. Omitting block_id preserves legacy whole-task completed semantics. Unknown actual minutes should be omitted.","inputSchema":{"type":"object","properties":{"review_id":{"type":"integer"},"block_id":{"type":"string"},"outcome":{"type":"string","enum":["completed","deferred","skipped"]},"task_completed":{"type":"boolean"},"spent_minutes":{"type":"integer","minimum":0,"maximum":1440},"remaining_minutes":{"type":"integer","minimum":0,"maximum":20160},"energy_rating":{"type":"integer","minimum":1,"maximum":5},"defer_reason":{"type":"string","enum":["","estimate","energy","interruption","external","other"]},"summary":{"type":"string","maxLength":500},"next_start":{"type":"string","description":"Optional pinned next-block start, validated against all calendar constraints."},"expected_revision":{"type":"integer"}},"required":["review_id","outcome"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"get_scheduling_experience","description":"Read versioned feedback memory, bounded calibration changes and pending learning status.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"get_schedule_settings","description":"Read availability, IANA timezone, daily work budgets, energy curves and current revision.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"replan_schedule","description":"Rebuild the 21-day flexible schedule deterministically without another AI assessment. Locked blocks and starts within two hours are protected.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"lock_schedule_block","description":"Lock or unlock one flexible work block. Fixed events always remain fixed.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"locked":{"type":"boolean"}},"required":["id","locked"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
+    ];
+    definitions.push(json!({"name":"update_schedule_settings","description":"Replace complete availability/energy settings returned by get_schedule_settings, with expected_revision to prevent overwriting concurrent edits. Replans future flexible work.","inputSchema":{"type":"object","properties":{"settings":{"type":"object","properties":{"timezone":{"type":"string"},"work_start":{"type":"integer"},"work_end":{"type":"integer"},"weekday_minutes":{"type":"integer"},"weekend_minutes":{"type":"integer"},"energy_weekday":{"type":"array","items":{"type":"integer"},"minItems":6,"maxItems":6},"energy_weekend":{"type":"array","items":{"type":"integer"},"minItems":6,"maxItems":6},"duration_factors":{"type":"object","additionalProperties":{"type":"integer"}}},"required":["timezone","work_start","work_end","weekday_minutes","weekend_minutes","energy_weekday","energy_weekend","duration_factors"],"additionalProperties":false},"expected_revision":{"type":"integer"}},"required":["settings","expected_revision"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}));
+    let task_fields = json!({
+        "title":{"type":"string","maxLength":160},"notes":{"type":"string","maxLength":1000},
+        "deadline":{"type":"string","description":"Hard deadline, RFC3339 with offset or owner-local YYYY-MM-DDTHH:mm; empty clears it."},
+        "timezone":{"type":"string","description":"Legacy context; local inputs use the owner's configured IANA timezone."},
+        "mode":{"type":"string","enum":["flexible","fixed"]},"priority":{"type":"integer","minimum":1,"maximum":5},
+        "estimated_minutes":{"type":"integer","minimum":1,"maximum":20160},"difficulty":{"type":"integer","minimum":1,"maximum":5},
+        "splittable":{"type":"boolean"},"min_chunk_minutes":{"type":"integer","minimum":15,"maximum":840,"multipleOf":15},
+        "max_chunk_minutes":{"type":"integer","minimum":15,"maximum":840,"multipleOf":15},
+        "fixed_start":{"type":"string"},"fixed_end":{"type":"string"},"locked":{"type":"boolean"},"reassess":{"type":"boolean"},"use_ai_estimate":{"type":"boolean"}
+    });
+    for tool in &mut definitions {
+        if ["create_task", "update_task"].contains(&tool["name"].as_str().unwrap_or("")) {
+            tool["inputSchema"]["properties"] = task_fields.clone();
+            if tool["name"] == "update_task" {
+                tool["inputSchema"]["properties"]["id"] = json!({"type":"integer"});
+                tool["inputSchema"]["properties"]["replan"] = json!({"type":"boolean"});
+            }
+        }
+    }
+    definitions
 }
 
 async fn call_tool(
@@ -973,7 +929,13 @@ async fn call_tool(
         .unwrap_or_else(|| json!({}));
     let requires_write = matches!(
         name,
-        "create_task" | "update_task" | "delete_task" | "save_review"
+        "create_task"
+            | "update_task"
+            | "delete_task"
+            | "save_review"
+            | "replan_schedule"
+            | "lock_schedule_block"
+            | "update_schedule_settings"
     );
     let required_scope = if requires_write {
         WRITE_SCOPE
@@ -991,35 +953,28 @@ async fn call_tool(
         "list_tasks" => schedule::list_owner_tasks(Extension(SendWrapper::new(env.clone())))
             .await
             .into_response(),
-        "create_task" => {
-            let title = required_string(&arguments, "title")?;
-            schedule::add_task(
-                Extension(SendWrapper::new(env.clone())),
-                Json(TaskCreateDTO {
-                    title,
-                    notes: optional_string(&arguments, "notes"),
-                    deadline: optional_string_value(&arguments, "deadline"),
-                    timezone: optional_string_value(&arguments, "timezone"),
-                }),
-            )
-            .await
-            .into_response()
-        }
+        "create_task" => schedule::add_task(
+            Extension(SendWrapper::new(env.clone())),
+            Json(
+                serde_json::from_value::<TaskCreateDTO>(arguments.clone())
+                    .map_err(|e| (-32602, e.to_string()))?,
+            ),
+        )
+        .await
+        .into_response(),
         "update_task" => {
             let id = required_i64(&arguments, "id")?;
             schedule::update_task(
                 Extension(SendWrapper::new(env.clone())),
                 axum::extract::Path(id),
-                Json(TaskUpdateDTO {
-                    title: required_string(&arguments, "title")?,
-                    notes: optional_string(&arguments, "notes"),
-                    deadline: optional_string_value(&arguments, "deadline"),
-                    timezone: optional_string_value(&arguments, "timezone"),
-                    replan: arguments
-                        .get("replan")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                }),
+                Json(
+                    serde_json::from_value::<TaskUpdateDTO>({
+                        let mut v = arguments.clone();
+                        v.as_object_mut().unwrap().remove("id");
+                        v
+                    })
+                    .map_err(|e| (-32602, e.to_string()))?,
+                ),
             )
             .await
             .into_response()
@@ -1041,16 +996,47 @@ async fn call_tool(
             schedule::save_review(
                 Extension(SendWrapper::new(env.clone())),
                 axum::extract::Path(review_id),
-                Json(ReviewDTO {
-                    outcome: required_string(&arguments, "outcome")?,
-                    spent_minutes: arguments
-                        .get("spent_minutes")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0)
-                        .clamp(0, 1440) as i32,
-                    summary: optional_string(&arguments, "summary"),
-                    next_start: optional_string_value(&arguments, "next_start"),
-                }),
+                Json(
+                    serde_json::from_value::<ReviewDTO>({
+                        let mut v = arguments.clone();
+                        v.as_object_mut().unwrap().remove("review_id");
+                        v
+                    })
+                    .map_err(|e| (-32602, e.to_string()))?,
+                ),
+            )
+            .await
+            .into_response()
+        }
+        "update_schedule_settings" => schedule::save_settings(
+            Extension(SendWrapper::new(env.clone())),
+            Json(
+                serde_json::from_value::<schedule::SettingsDTO>(arguments.clone())
+                    .map_err(|e| (-32602, e.to_string()))?,
+            ),
+        )
+        .await
+        .into_response(),
+        "get_schedule_settings" => schedule::get_settings(Extension(SendWrapper::new(env.clone())))
+            .await
+            .into_response(),
+        "replan_schedule" => schedule::replan(Extension(SendWrapper::new(env.clone())))
+            .await
+            .into_response(),
+        "lock_schedule_block" => {
+            let id = arguments
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or((-32602, "id is required".into()))?
+                .to_string();
+            let locked = arguments
+                .get("locked")
+                .and_then(Value::as_bool)
+                .ok_or((-32602, "locked is required".into()))?;
+            schedule::lock_block(
+                Extension(SendWrapper::new(env.clone())),
+                axum::extract::Path(id),
+                Json(schedule::LockDTO { locked }),
             )
             .await
             .into_response()
@@ -1077,34 +1063,6 @@ async fn call_tool(
         return Ok(tool_result(value, true));
     }
     Ok(tool_result(value, false))
-}
-
-fn required_string(arguments: &Value, key: &str) -> Result<String, (i32, String)> {
-    arguments
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .ok_or((-32602, format!("{} is required", key)))
-}
-
-fn optional_string(arguments: &Value, key: &str) -> String {
-    arguments
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
-fn optional_string_value(arguments: &Value, key: &str) -> Option<String> {
-    let value = optional_string(arguments, key);
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
 }
 
 fn required_i64(arguments: &Value, key: &str) -> Result<i64, (i32, String)> {
