@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use time::{Date, Duration, OffsetDateTime, PrimitiveDateTime, Time};
 use time_tz::{OffsetDateTimeExt, PrimitiveDateTimeExt};
 
-pub const VERSION: &str = "deterministic-v1";
+pub const VERSION: &str = "deterministic-v2";
 pub const HORIZON: i64 = 21;
 pub const QUANTUM: i64 = 900;
 pub const GAP: i64 = 900;
@@ -176,6 +176,7 @@ impl Assessment {
 pub struct Meta {
     pub mode: String,
     pub priority: i32,
+    pub depends_on: Vec<i64>,
     pub assessment: Assessment,
     pub estimated_override: Option<i32>,
     pub remaining_minutes: Option<i32>,
@@ -191,6 +192,7 @@ impl Default for Meta {
         Self {
             mode: "flexible".into(),
             priority: 3,
+            depends_on: Vec::new(),
             assessment: Assessment::default(),
             estimated_override: None,
             remaining_minutes: None,
@@ -238,6 +240,67 @@ pub struct Task {
 impl Task {
     pub fn active(&self) -> bool {
         !["done", "skipped", "cancelled"].contains(&self.status.as_str())
+    }
+}
+/// Validate the complete graph before storing an edit. Old JSON defaults to no edges.
+pub fn validate_dependencies(tasks: &[Task]) -> Result<(), String> {
+    let ids: BTreeSet<_> = tasks.iter().map(|t| t.id).collect();
+    let mut remaining = BTreeMap::new();
+    for task in tasks {
+        let deps: BTreeSet<_> = task.meta.depends_on.iter().copied().collect();
+        if deps.len() > 100 || deps.len() != task.meta.depends_on.len() {
+            return Err("depends_on must contain at most 100 unique task IDs".into());
+        }
+        if deps.contains(&task.id) {
+            return Err("A task cannot depend on itself".into());
+        }
+        if let Some(id) = deps.iter().find(|id| !ids.contains(id)) {
+            return Err(format!("Dependency task {id} does not exist"));
+        }
+        remaining.insert(task.id, deps);
+    }
+    while !remaining.is_empty() {
+        let ready: Vec<_> = remaining
+            .iter()
+            .filter(|(_, d)| d.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        if ready.is_empty() {
+            return Err("Task dependencies must not contain a cycle".into());
+        }
+        for id in ready {
+            remaining.remove(&id);
+            for deps in remaining.values_mut() {
+                deps.remove(&id);
+            }
+        }
+    }
+    Ok(())
+}
+
+// None: a predecessor still needs placement; Err: it has no reliable completion.
+fn dependency_release(
+    task: &Task,
+    resolved: &BTreeMap<i64, Option<i64>>,
+    tasks: &BTreeMap<i64, &Task>,
+) -> Option<Result<i64, String>> {
+    let mut release = i64::MIN;
+    let mut waiting = false;
+    let mut blocked = Vec::new();
+    for id in &task.meta.depends_on {
+        match resolved.get(id) {
+            Some(Some(end)) => release = release.max(*end),
+            Some(None) => blocked.push(id.to_string()),
+            None if !tasks.contains_key(id) => blocked.push(id.to_string()),
+            None => waiting = true,
+        }
+    }
+    if !blocked.is_empty() {
+        Some(Err(format!("dependency_blocked:{}", blocked.join(","))))
+    } else if waiting {
+        None
+    } else {
+        Some(Ok(release))
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -525,6 +588,58 @@ pub fn plan(
     blocks: &[Block],
     classes: &[Busy],
 ) -> Vec<Placement> {
+    // Propagate deadlines and immovable successor starts to their ancestors.
+    // Otherwise an energy-optimal predecessor could be placed after a fixed successor.
+    let mut bounded = tasks.to_vec();
+    for _ in 0..tasks.len() {
+        let limits: Vec<_> = bounded
+            .iter()
+            .filter(|t| t.active())
+            .flat_map(|t| {
+                let limit = t
+                    .deadline
+                    .into_iter()
+                    .chain(if t.meta.mode == "fixed" {
+                        t.meta.fixed_start
+                    } else {
+                        None
+                    })
+                    .min();
+                t.meta
+                    .depends_on
+                    .iter()
+                    .filter_map(move |id| limit.map(|end| (*id, end)))
+            })
+            .collect();
+        let mut changed = false;
+        for (id, limit) in limits {
+            if let Some(t) = bounded.iter_mut().find(|t| t.id == id && t.active()) {
+                if t.deadline.map(|d| limit < d).unwrap_or(true) {
+                    t.deadline = Some(limit);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let tasks = bounded.as_slice();
+    let all: BTreeMap<_, _> = tasks.iter().map(|t| (t.id, t)).collect();
+    let mut resolved: BTreeMap<_, _> = tasks
+        .iter()
+        .filter(|t| !t.active())
+        .map(|t| {
+            (
+                t.id,
+                if t.status == "done" {
+                    Some(i64::MIN)
+                } else {
+                    None
+                },
+            )
+        })
+        .collect();
     let mut busy = classes.to_vec();
     let mut allocated = Vec::new();
     // Finished work still consumes today's budget, including tasks now marked done.
@@ -645,11 +760,8 @@ pub fn plan(
             .into(),
         });
     }
-    let mut queue: Vec<_> = active
-        .values()
-        .filter(|t| t.meta.mode != "fixed")
-        .copied()
-        .collect();
+    let protected: BTreeSet<_> = retained.values().flatten().map(|b| b.id.clone()).collect();
+    let mut queue: Vec<_> = active.values().copied().collect();
     while !queue.is_empty() {
         queue.sort_by_cached_key(|task| {
             let r = task.meta.minutes(settings);
@@ -673,9 +785,60 @@ pub fn plan(
                 task.id,
             )
         });
-        let task = queue.remove(0);
+        let ready = queue
+            .iter()
+            .position(|t| dependency_release(t, &resolved, &all).is_some());
+        let task = queue.remove(ready.unwrap_or(0));
+        let release = dependency_release(task, &resolved, &all)
+            .unwrap_or_else(|| Err("dependency_cycle".into()));
+        // A failed placement must never release downstream work.
+        resolved.insert(task.id, None);
+        if task.meta.mode == "fixed" {
+            if let Some(p) = result.iter_mut().find(|p| p.task_id == task.id) {
+                match release {
+                    Err(reason) => {
+                        p.state = "conflict".into();
+                        p.reason = reason;
+                    }
+                    Ok(end) if p.blocks.iter().any(|b| b.start < end) => {
+                        p.state = "conflict".into();
+                        p.reason = "dependency_order".into();
+                    }
+                    Ok(_)
+                        if p.state == "scheduled"
+                            && !pending.contains(&task.id)
+                            && task.meta.fixed_end.map(|end| end > now).unwrap_or(false) =>
+                    {
+                        resolved.insert(task.id, p.blocks.iter().map(|b| b.end).max());
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
         let mut kept = retained.remove(&task.id).unwrap_or_default();
         kept.sort_by_key(|b| (b.start, b.end, b.id.clone()));
+        let release = match release {
+            Ok(end) if kept.iter().all(|b| b.start >= end) => end,
+            other => {
+                result.push(Placement {
+                    task_id: task.id,
+                    state: if kept.is_empty() {
+                        "unscheduled"
+                    } else {
+                        "conflict"
+                    }
+                    .into(),
+                    blocks: kept,
+                    reason: other.err().unwrap_or_else(|| "dependency_order".into()),
+                });
+                continue;
+            }
+        };
+        let mut constrained = task.clone();
+        constrained.meta.not_before =
+            Some(constrained.meta.not_before.unwrap_or(i64::MIN).max(release));
+        let task = &constrained;
         if pending.contains(&task.id) {
             result.push(Placement {
                 task_id: task.id,
@@ -720,6 +883,9 @@ pub fn plan(
                 kept.push(block);
             }
             kept.sort_by_key(|b| (b.start, b.end, b.id.clone()));
+            if task.meta.minutes(settings) > 0 {
+                resolved.insert(task.id, kept.iter().map(|b| b.end).max());
+            }
             result.push(Placement {
                 task_id: task.id,
                 blocks: kept,
@@ -807,6 +973,65 @@ pub fn plan(
             p.reason="Protected blocks conflict with a commitment, deadline, work window or daily budget; resolve them explicitly.".into();
         }
     }
+    // Late conflict checks can invalidate a predecessor (e.g. a protected block).
+    // Propagate that failure, removing movable successor blocks while preserving
+    // fixed/protected commitments as explicit conflicts.
+    for _ in 0..tasks.len() {
+        let completion: BTreeMap<_, _> = tasks
+            .iter()
+            .filter(|t| !t.active())
+            .map(|t| {
+                (
+                    t.id,
+                    if t.status == "done" {
+                        Some(i64::MIN)
+                    } else {
+                        None
+                    },
+                )
+            })
+            .chain(result.iter().map(|p| {
+                (
+                    p.task_id,
+                    if p.state == "scheduled"
+                        && !pending.contains(&p.task_id)
+                        && p.blocks.iter().all(|b| b.end > now)
+                    {
+                        p.blocks.iter().map(|b| b.end).max()
+                    } else {
+                        None
+                    },
+                )
+            }))
+            .collect();
+        let mut changed = false;
+        for p in &mut result {
+            let task = all[&p.task_id];
+            let reason = match dependency_release(task, &completion, &all) {
+                Some(Err(reason)) => Some(reason),
+                Some(Ok(end)) if p.blocks.iter().any(|b| b.start < end) => {
+                    Some("dependency_order".into())
+                }
+                None => Some("dependency_cycle".into()),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                p.blocks
+                    .retain(|b| task.meta.mode == "fixed" || protected.contains(&b.id));
+                let state = if p.blocks.is_empty() {
+                    "unscheduled"
+                } else {
+                    "conflict"
+                };
+                changed |= p.state != state || p.reason != reason;
+                p.state = state.into();
+                p.reason = reason;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
     result.sort_by_key(|p| p.task_id);
     result
 }
@@ -833,6 +1058,215 @@ mod tests {
     }
     fn now() -> i64 {
         stamp("2026-10-19T07:00:00-04:00")
+    }
+    fn planned(task_id: i64, start: i64, end: i64) -> Block {
+        Block {
+            id: format!("existing-{task_id}"),
+            task_id,
+            start,
+            end,
+            minutes: ((end - start) / 60) as i32,
+            status: "planned".into(),
+            locked: true,
+            assessment: Assessment::default(),
+            settings_version: 1,
+            legacy: false,
+            actual_minutes: None,
+        }
+    }
+    #[test]
+    fn dependencies_finish_all_chunks_before_high_priority_successors() {
+        let s = Settings::default();
+        let mut design = task(1, 600);
+        design.meta.priority = 1;
+        design.meta.assessment.difficulty = 5;
+        let research = task(2, 60);
+        let mut implement = task(3, 60);
+        implement.meta.priority = 5;
+        implement.meta.assessment.difficulty = 1;
+        implement.meta.depends_on = vec![1, 2];
+        let mut verify = task(4, 30);
+        verify.meta.depends_on = vec![3];
+        let tasks = vec![verify, implement, research, design];
+        let p = plan(&s, now(), 1, &tasks, &[], &[]);
+        assert!(p.iter().all(|p| p.state == "scheduled"));
+        for t in &tasks {
+            let start = p
+                .iter()
+                .find(|p| p.task_id == t.id)
+                .unwrap()
+                .blocks
+                .iter()
+                .map(|b| b.start)
+                .min()
+                .unwrap();
+            for id in &t.meta.depends_on {
+                assert!(p
+                    .iter()
+                    .find(|p| p.task_id == *id)
+                    .unwrap()
+                    .blocks
+                    .iter()
+                    .all(|b| b.end <= start));
+            }
+        }
+        let mut reversed = tasks.clone();
+        reversed.reverse();
+        assert_eq!(
+            format!("{p:?}"),
+            format!("{:?}", plan(&s, now(), 1, &reversed, &[], &[]))
+        );
+    }
+    #[test]
+    fn blocked_dependencies_propagate_and_completed_dependencies_release_work() {
+        let s = Settings::default();
+        let mut parent = task(1, 60);
+        parent.deadline = Some(now() - 1);
+        let mut child = task(2, 30);
+        child.meta.depends_on = vec![1];
+        let mut grandchild = task(3, 30);
+        grandchild.meta.depends_on = vec![2];
+        for status in ["planned", "skipped", "cancelled"] {
+            parent.status = status.into();
+            let p = plan(
+                &s,
+                now(),
+                1,
+                &[parent.clone(), child.clone(), grandchild.clone()],
+                &[],
+                &[],
+            );
+            for id in [2, 3] {
+                let p = p.iter().find(|p| p.task_id == id).unwrap();
+                assert_eq!(p.state, "unscheduled");
+                assert!(p.reason.starts_with("dependency_blocked:"));
+                assert!(p.blocks.is_empty());
+            }
+        }
+        parent.status = "done".into();
+        let p = plan(&s, now(), 1, &[parent, child, grandchild], &[], &[]);
+        assert!(p.iter().all(|p| p.state == "scheduled"));
+    }
+    #[test]
+    fn pending_reviews_block_dependents_until_completion_is_confirmed() {
+        let s = Settings::default();
+        let parent = task(1, 60);
+        let mut child = task(2, 30);
+        child.meta.depends_on = vec![1];
+        let mut elapsed = planned(1, now() - 7200, now() - 3600);
+        elapsed.status = "awaiting_review".into();
+        let p = plan(&s, now(), 1, &[parent, child], &[elapsed], &[]);
+        assert_eq!(p[1].state, "unscheduled");
+        assert!(p[1].blocks.is_empty());
+    }
+    #[test]
+    fn elapsed_fixed_predecessors_require_confirmation_even_before_first_review_tick() {
+        let s = Settings::default();
+        let mut parent = task(1, 60);
+        parent.meta.mode = "fixed".into();
+        parent.meta.fixed_start = Some(now() - 7200);
+        parent.meta.fixed_end = Some(now() - 3600);
+        let mut child = task(2, 30);
+        child.meta.depends_on = vec![1];
+        let p = plan(&s, now(), 1, &[parent, child], &[], &[]);
+        assert_eq!(p[1].state, "unscheduled");
+        assert!(p[1].blocks.is_empty());
+    }
+    #[test]
+    fn completed_successor_history_does_not_constrain_active_ancestors() {
+        let parent = task(1, 60);
+        let mut child = task(2, 30);
+        child.meta.depends_on = vec![1];
+        child.deadline = Some(now() - 1);
+        child.status = "done".into();
+        let p = plan(&Settings::default(), now(), 1, &[parent, child], &[], &[]);
+        assert_eq!(p[0].state, "scheduled");
+    }
+    #[test]
+    fn fixed_successor_constrains_ancestors_without_moving_the_event() {
+        let s = Settings::default();
+        let mut design = task(1, 60);
+        design.meta.assessment.difficulty = 5;
+        let mut event = task(2, 60);
+        event.meta.mode = "fixed".into();
+        event.meta.depends_on = vec![1];
+        event.meta.fixed_start = Some(stamp("2026-10-19T10:00:00-04:00"));
+        event.meta.fixed_end = Some(stamp("2026-10-19T11:00:00-04:00"));
+        let p = plan(&s, now(), 1, &[design.clone(), event.clone()], &[], &[]);
+        assert!(p.iter().all(|p| p.state == "scheduled"));
+        assert!(p[0]
+            .blocks
+            .iter()
+            .all(|b| b.end <= event.meta.fixed_start.unwrap()));
+        assert_eq!(p[1].blocks[0].start, event.meta.fixed_start.unwrap());
+        event.meta.fixed_start = Some(now() + 1800);
+        event.meta.fixed_end = Some(now() + 5400);
+        let p = plan(&s, now(), 1, &[design, event.clone()], &[], &[]);
+        assert_eq!(p[1].state, "conflict");
+        assert_eq!(p[1].blocks[0].start, event.meta.fixed_start.unwrap());
+    }
+    #[test]
+    fn protected_successor_conflicts_are_preserved_and_block_descendants() {
+        let s = Settings::default();
+        let parent = task(1, 600);
+        let mut child = task(2, 60);
+        child.meta.depends_on = vec![1];
+        let mut grandchild = task(3, 30);
+        grandchild.meta.depends_on = vec![2];
+        let pinned = planned(2, now() + 4 * 3600, now() + 5 * 3600);
+        let p = plan(
+            &s,
+            now(),
+            1,
+            &[parent, child, grandchild],
+            &[pinned.clone()],
+            &[],
+        );
+        assert_eq!(p[1].state, "conflict");
+        assert_eq!(p[1].blocks[0], pinned);
+        assert!(p[2].blocks.is_empty());
+    }
+    #[test]
+    fn late_protected_conflicts_invalidate_new_successor_blocks() {
+        let s = Settings::default();
+        let parent = task(1, 60);
+        let mut child = task(2, 30);
+        child.meta.depends_on = vec![1];
+        let pinned = planned(1, now() + 4 * 3600, now() + 5 * 3600);
+        let class = Busy {
+            start: pinned.start,
+            end: pinned.end,
+        };
+        let p = plan(&s, now(), 1, &[parent, child], &[pinned], &[class]);
+        assert_eq!(p[0].state, "conflict");
+        assert_eq!(p[1].state, "unscheduled");
+        assert!(p[1].blocks.is_empty());
+    }
+    #[test]
+    fn invalid_dependency_graphs_are_rejected_and_corrupt_data_never_loops() {
+        let a = task(1, 30);
+        let mut b = task(2, 30);
+        b.meta.depends_on = vec![1];
+        assert!(validate_dependencies(&[a.clone(), b.clone()]).is_ok());
+        for deps in [vec![2], vec![99], vec![1, 1]] {
+            b.meta.depends_on = deps;
+            assert!(validate_dependencies(&[a.clone(), b.clone()]).is_err());
+        }
+        let mut a = a;
+        a.meta.depends_on = vec![2];
+        b.meta.depends_on = vec![1];
+        assert!(validate_dependencies(&[a.clone(), b.clone()]).is_err());
+        let p = plan(&Settings::default(), now(), 1, &[a, b], &[], &[]);
+        assert!(p
+            .iter()
+            .all(|p| p.state == "unscheduled" && p.blocks.is_empty()));
+        let mut missing = task(1, 30);
+        missing.meta.depends_on = vec![99];
+        assert!(
+            plan(&Settings::default(), now(), 1, &[missing], &[], &[])[0]
+                .blocks
+                .is_empty()
+        );
     }
     #[test]
     fn reproducible_and_order_independent() {

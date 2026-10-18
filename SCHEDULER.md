@@ -16,7 +16,7 @@ Deploy the backend before the updated frontend. The old task start/end columns r
 
 No new service is required. `CLOUDFLARE_API_TOKEN`, `SCHEDULE_AI_MODEL`, and the existing AI Gateway configuration are reused. Missing or invalid AI responses use a marked default (60 minutes, difficulty 3, splittable 30–90 minutes); explicit reassessment reuses a previous valid assessment on failure. Each network attempt has a 20-second timeout. Creating fixed events and ordinary replanning require no AI call.
 
-## Policy v1
+## Policy v2
 
 - Owner timezone: `America/Detroit`, with date-specific IANA offsets; stored timestamps are UTC.
 - Planning horizon: 21 local days. Work window: 08:00–22:00.
@@ -25,7 +25,8 @@ No new service is required. `CLOUDFLARE_API_TOKEN`, `SCHEDULE_AI_MODEL`, and the
 - Grid and rest: 15 minutes. New work starts at least 15 minutes after the supplied planning clock.
 - Started, locked and next-two-hour blocks are protected. Tasks with pending block reviews retain their remaining existing plan until reviewed.
 - Fixed events retain exact seconds, can occur outside working hours, and may overlap each other. Conflicts are explicitly reported; flexible work avoids their union. Protected flexible blocks that become invalid after a fixed-event, deadline, availability or budget edit are preserved and flagged as conflicts.
-- Priority: 1–5, with 5 highest and 3 default. Urgency comes first: deadlines inside the horizon with available capacity ≤ twice remaining work; then other deadlines inside 72 hours; then other tasks. Within a group: priority descending, deadline ascending, creation time and ID. Capacity is recalculated after each placement.
+- Dependencies: `depends_on` lists predecessor task IDs. Only tasks whose predecessors have a complete, conflict-free plan are eligible; their earliest start is the latest predecessor block end. All chunks of every predecessor must finish first. Completed tasks satisfy dependencies; skipped/cancelled, unscheduled, partial and pending-review tasks block downstream work. Hard deadlines and fixed successor starts also constrain ancestors. A fixed or protected successor that violates ordering retains its time and reports a conflict; movable downstream blocks are removed when a predecessor becomes invalid. New pending reviews trigger dependency replanning on the next cron tick.
+- Priority: `priority_level` uses **P1 highest**, P2 high, P3 normal (default), P4 low, P5 lowest. Legacy numeric `priority` remains 5 highest through 1 lowest, so P1=5 and P2=4. Notes never set priority. Among dependency-ready tasks, urgency comes first: deadlines inside the horizon with available capacity ≤ twice remaining work; then other deadlines inside 72 hours; then other tasks. Within a group: priority descending, deadline ascending, creation time and ID. Capacity is recalculated after each placement.
 - Whole remaining work must fit before the hard deadline and inside the horizon. Otherwise no new partial solution is committed; existing protected blocks remain and the task reports a waiting reason. This is sequential task allocation, not a globally optimal solver.
 
 For split tasks, weighted interval dynamic programming finds daily block combinations, then an across-day knapsack selects a complete plan. Unsplit tasks enumerate continuous placements. Integer costs per 15-minute unit are:
@@ -43,7 +44,9 @@ Energy buckets (weekday/weekend independently editable): before 10, 10–12, 12�
 
 ## Interfaces
 
-Existing task endpoints remain under `/api/protected/schedule/tasks`. Creation/update supports `mode`, `priority`, `estimated_minutes`, `difficulty`, `splittable`, `min_chunk_minutes`, `max_chunk_minutes`, `locked`, `fixed_start`, `fixed_end`, and `reassess`. `replan` reuses persisted parameters. `use_ai_estimate: true` removes a manual estimate override. Clear a deadline using an empty string. Pure title/note edits do not trigger reassessment.
+Existing task endpoints remain under `/api/protected/schedule/tasks`. Creation/update supports `mode`, `priority_level`, legacy numeric `priority`, `depends_on`, `estimated_minutes`, `difficulty`, `splittable`, `min_chunk_minutes`, `max_chunk_minutes`, `locked`, `fixed_start`, `fixed_end`, and `reassess`. Prefer `priority_level`; conflicting numeric and labeled priorities are rejected. Private task responses return both scales and `depends_on`. `replan` reuses persisted parameters. `use_ai_estimate: true` removes a manual estimate override. Clear a deadline using an empty string. Pure title/note edits do not trigger reassessment.
+
+`depends_on` replaces prerequisites when supplied; omit it to preserve them or send `[]` to clear. The server rejects missing IDs, self-dependencies, duplicate IDs, more than 100 direct predecessors and cycles before committing changes. Deletion returns 409 while any task still references that ID; remove those references first. Dependencies and priority labels use existing task JSON, so this extension requires **no additional database migration** beyond 0009. Old tasks default to no dependencies and retain their numeric priorities.
 
 Times accept offset-qualified RFC3339 or owner-local `YYYY-MM-DDTHH:mm`. Ambiguous/nonexistent local DST times are rejected; use an explicit offset. The legacy task `timezone` label is accepted for compatibility; settings determine local interpretation.
 
@@ -63,7 +66,7 @@ MCP exposes the same task/review operations plus `get_schedule_settings`, `updat
 
 Block review requests send `block_id`, `task_completed`, `remaining_minutes`, optional `spent_minutes`, `energy_rating` (1–5), `defer_reason`, `summary`, and optionally `expected_revision`. Non-completed flexible tasks require a positive current remaining estimate. Actual time is never subtracted as progress. Omitting actual time records it as unknown. Explicit whole-task completion cancels outstanding future blocks and redundant pending reviews. A legacy `outcome=completed` request without `block_id` still completes the entire task.
 
-`next_start` pins the next block and prevents other remaining segments from starting earlier. It checks the work window, 15-minute grid, 21-day horizon, other commitments, daily budget and hard deadline. Finish other pending reviews and resolve earlier protected blocks before pinning a later resume time; unlocking the resume block removes its earliest-start constraint. A fixed event cannot be deferred; create a separate follow-up task.
+`next_start` pins the next block and prevents other remaining segments from starting earlier. It checks the work window, 15-minute grid, 21-day horizon, other commitments, prerequisite completion, daily budget and hard deadline. Finish other pending reviews and resolve earlier protected blocks before pinning a later resume time; unlocking the resume block removes its earliest-start constraint. A fixed event cannot be deferred; create a separate follow-up task.
 
 ## Learning, concurrency and failures
 

@@ -35,8 +35,13 @@ def iso(value):
 
 
 def run():
-    names = [t['name'] for t in rpc('tools/list', {})['tools']]
+    definitions = rpc('tools/list', {})['tools']
+    names = [t['name'] for t in definitions]
     assert {'replan_schedule', 'update_schedule_settings', 'lock_schedule_block'} <= set(names)
+    for definition in definitions:
+        if definition['name'] in ('create_task', 'update_task'):
+            assert definition['inputSchema']['properties']['priority_level']['enum'] == ['P1', 'P2', 'P3', 'P4', 'P5']
+            assert 'depends_on' in definition['inputSchema']['properties']
     before = tool('list_tasks')
     assert not before['tasks'], 'Use an empty isolated test database'
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
@@ -59,6 +64,27 @@ def run():
     assert overlap['schedule_state'] == 'conflict'
     waiting = tool('create_task', dict(title='Integration past deadline', deadline=iso(now - dt.timedelta(minutes=5)), estimated_minutes=60))['task']
     assert waiting['schedule_state'] == 'unscheduled' and not waiting['blocks']
+    design = tool('create_task', dict(title='Integration design', priority_level='P5', estimated_minutes=105))['task']
+    implement = tool('create_task', dict(title='Integration implementation', priority_level='P1', depends_on=[design['id']], estimated_minutes=60))['task']
+    assert implement['priority'] == 5 and implement['priority_level'] == 'P1'
+    assert implement['depends_on'] == [design['id']]
+    tasks = {t['id']:t for t in tool('list_tasks')['tasks']}
+    assert max(b['scheduled_end'] for b in tasks[design['id']]['blocks']) <= min(b['scheduled_start'] for b in tasks[implement['id']]['blocks'])
+    saved_revision = tool('list_tasks')['revision']
+    tool('update_task', dict(id=design['id'], title=design['title'], depends_on=[implement['id']]), error=True)
+    tool('update_task', dict(id=design['id'], title=design['title'], depends_on=[design['id']]), error=True)
+    tool('update_task', dict(id=design['id'], title=design['title'], depends_on=[999999]), error=True)
+    tool('delete_task', dict(id=design['id']), error=True)
+    tool('update_task', dict(id=implement['id'], title=implement['title'], priority_level='P1', priority=1), error=True)
+    tool('create_task', dict(title='Invalid priority', priority_level='P0'), error=True)
+    assert tool('list_tasks')['revision'] == saved_revision, 'Invalid graph/priority edits must be atomic'
+    implement = tool('update_task', dict(id=implement['id'], title=implement['title'], priority_level='P2', depends_on=[]))['task']
+    assert implement['priority'] == 4 and implement['priority_level'] == 'P2' and implement['depends_on'] == []
+    implement = tool('update_task', dict(id=implement['id'], title=implement['title'], notes='Notes edit keeps explicit priority', depends_on=[design['id']]))['task']
+    assert implement['priority_level'] == 'P2'
+    blocked = tool('create_task', dict(title='Integration dependent waiting', depends_on=[waiting['id']], estimated_minutes=30))['task']
+    assert blocked['schedule_state'] == 'unscheduled' and not blocked['blocks']
+    assert blocked['unscheduled_reason'].startswith('dependency_blocked:')
     settings = tool('get_schedule_settings')
     settings['settings']['energy_weekday'][0] = 71
     tool('update_schedule_settings', dict(settings=settings['settings'], expected_revision=settings['revision']))
@@ -66,7 +92,7 @@ def run():
     with urllib.request.urlopen(BASE + '/api/schedule/tasks') as response:
         public = json.load(response)
     assert 'PRIVATE FIXTURE NOTE' not in json.dumps(public)
-    assert all('assessment' not in t and 'notes' not in t for t in public)
+    assert all('assessment' not in t and 'notes' not in t and 'depends_on' not in t for t in public)
     assert waiting['id'] not in [t['id'] for t in public]
     try:
         urllib.request.urlopen(urllib.request.Request(BASE + f"/api/schedule/tasks/{waiting['id']}/reactions", json.dumps({'emoji':'👏'}).encode(), headers={'Content-Type':'application/json'}))
@@ -87,12 +113,12 @@ def run():
     assert next(t for t in tool('list_tasks')['tasks'] if t['id'] == past['id'])['status'] == 'done'
     experience = tool('get_scheduling_experience')
     assert experience['history'], 'Manual profile updates must have an audit trail'
-    owned = {created['id'], fixed['id'], overlap['id'], waiting['id'], past['id'], *(entry['task']['id'] for entry in parallel)}
-    for task in tool('list_tasks')['tasks']:
+    owned = {created['id'], fixed['id'], overlap['id'], waiting['id'], past['id'], design['id'], implement['id'], blocked['id'], *(entry['task']['id'] for entry in parallel)}
+    for task in sorted(tool('list_tasks')['tasks'], key=lambda t:t['id'], reverse=True):
         if task['id'] in owned:
             tool('delete_task', dict(id=task['id']))
     assert not tool('list_tasks')['tasks']
-    print('PASS: real WASM/D1/MCP create, split, update, pin, fixed conflicts, waiting list, settings CAS, privacy, concurrent creates, cron, reviews, audit, delete')
+    print('PASS: real WASM/D1/MCP priorities P1/P2, dependencies, graph validation/atomicity, split, update, pin, fixed conflicts, waiting list, settings CAS, privacy, concurrent creates, cron, reviews, audit, delete')
 
 
 def isolated():

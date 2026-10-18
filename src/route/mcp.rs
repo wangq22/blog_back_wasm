@@ -881,9 +881,9 @@ fn rpc_error(id: Value, code: i32, message: &str) -> Value {
 fn tool_definitions() -> Vec<Value> {
     let mut definitions = vec![
         json!({"name":"list_tasks","description":"List private tasks, persisted AI assessments, deterministic work blocks, waiting reasons and calendar revision.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}),
-        json!({"name":"create_task","description":"Create a task. AI assesses parameters; deterministic code schedules it. Use mode=fixed with exact fixed_start/fixed_end for contests or appointments. An unschedulable task is saved with a waiting reason.","inputSchema":{"type":"object","properties":{},"required":["title"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
-        json!({"name":"update_task","description":"Edit a task. Scheduling changes replan flexible future work, protecting locked blocks and the next two hours. replan reuses the stored assessment; reassess explicitly calls AI again. Clear deadline with an empty string.","inputSchema":{"type":"object","properties":{},"required":["id","title"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
-        json!({"name":"delete_task","description":"Delete a task and its blocks, reviews and reactions, then replan future work.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}}),
+        json!({"name":"create_task","description":"Create a task. AI assesses parameters; deterministic code schedules it. Use mode=fixed with exact fixed_start/fixed_end for contests or appointments. An unschedulable task is saved with a waiting reason. Set priority_level for P1/P2 priorities; notes do not set priority. Set depends_on to predecessor IDs for ordered work.","inputSchema":{"type":"object","properties":{},"required":["title"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"update_task","description":"Edit a task. Scheduling changes replan flexible future work, protecting locked blocks and the next two hours. replan reuses the stored assessment; reassess explicitly calls AI again. Clear deadline with an empty string; depends_on=[] clears prerequisites. Set priority_level explicitly for P1/P2 priorities; notes do not set priority.","inputSchema":{"type":"object","properties":{},"required":["id","title"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
+        json!({"name":"delete_task","description":"Delete a task and its blocks, reviews and reactions, then replan future work. Rejected while other tasks reference it in depends_on; clear their dependencies first.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}}),
         json!({"name":"list_reviews","description":"List elapsed work blocks awaiting reflection, with their block IDs and the calendar revision.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}),
         json!({"name":"save_review","description":"Reflect on one work block. Send block_id and task_completed explicitly. Unfinished flexible tasks require remaining_minutes: actual minutes are not progress. Omitting block_id preserves legacy whole-task completed semantics. Unknown actual minutes should be omitted.","inputSchema":{"type":"object","properties":{"review_id":{"type":"integer"},"block_id":{"type":"string"},"outcome":{"type":"string","enum":["completed","deferred","skipped"]},"task_completed":{"type":"boolean"},"spent_minutes":{"type":"integer","minimum":0,"maximum":1440},"remaining_minutes":{"type":"integer","minimum":0,"maximum":20160},"energy_rating":{"type":"integer","minimum":1,"maximum":5},"defer_reason":{"type":"string","enum":["","estimate","energy","interruption","external","other"]},"summary":{"type":"string","maxLength":500},"next_start":{"type":"string","description":"Optional pinned next-block start, validated against all calendar constraints."},"expected_revision":{"type":"integer"}},"required":["review_id","outcome"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}),
         json!({"name":"get_scheduling_experience","description":"Read versioned feedback memory, bounded calibration changes and pending learning status.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}),
@@ -896,7 +896,10 @@ fn tool_definitions() -> Vec<Value> {
         "title":{"type":"string","maxLength":160},"notes":{"type":"string","maxLength":1000},
         "deadline":{"type":"string","description":"Hard deadline, RFC3339 with offset or owner-local YYYY-MM-DDTHH:mm; empty clears it."},
         "timezone":{"type":"string","description":"Legacy context; local inputs use the owner's configured IANA timezone."},
-        "mode":{"type":"string","enum":["flexible","fixed"]},"priority":{"type":"integer","minimum":1,"maximum":5},
+        "mode":{"type":"string","enum":["flexible","fixed"]},
+        "priority_level":{"type":"string","enum":["P1","P2","P3","P4","P5"],"description":"Explicit task priority: P1 highest, P2 high, P3 normal (default), P4 low, P5 lowest. When the user says P1/P2/etc, set this field; writing it in notes does not set priority. Prefer this over legacy numeric priority."},
+        "priority":{"type":"integer","minimum":1,"maximum":5,"description":"Legacy numeric scale: 5 highest, 1 lowest. Prefer priority_level. If both are supplied they must agree (P1=5, P2=4, P3=3, P4=2, P5=1)."},
+        "depends_on":{"type":"array","items":{"type":"integer","minimum":1},"uniqueItems":true,"maxItems":100,"description":"IDs of tasks that must finish before this task starts. Use list_tasks to find IDs or create predecessors first. All predecessor work blocks must end first. Missing/self/cyclic dependencies are rejected. Omit to preserve on update; [] clears dependencies. Unscheduled, skipped or unreviewed predecessors block this task."},
         "estimated_minutes":{"type":"integer","minimum":1,"maximum":20160},"difficulty":{"type":"integer","minimum":1,"maximum":5},
         "splittable":{"type":"boolean"},"min_chunk_minutes":{"type":"integer","minimum":15,"maximum":840,"multipleOf":15},
         "max_chunk_minutes":{"type":"integer","minimum":15,"maximum":840,"multipleOf":15},
@@ -1084,6 +1087,21 @@ fn tool_result(value: Value, is_error: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_tools_expose_explicit_priority_and_dependency_contracts() {
+        let definitions = tool_definitions();
+        for name in ["create_task", "update_task"] {
+            let tool = definitions.iter().find(|t| t["name"] == name).unwrap();
+            let fields = &tool["inputSchema"]["properties"];
+            assert_eq!(
+                fields["priority_level"]["enum"],
+                json!(["P1", "P2", "P3", "P4", "P5"])
+            );
+            assert_eq!(fields["depends_on"]["items"]["type"], "integer");
+            assert_eq!(fields["depends_on"]["uniqueItems"], true);
+        }
+    }
 
     #[test]
     fn base64url_has_no_padding() {

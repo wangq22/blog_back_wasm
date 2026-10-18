@@ -273,6 +273,8 @@ pub struct TaskCreateDTO {
     pub timezone: Option<String>,
     pub mode: Option<String>,
     pub priority: Option<i32>,
+    pub priority_level: Option<String>,
+    pub depends_on: Option<Vec<i64>>,
     pub estimated_minutes: Option<i32>,
     pub difficulty: Option<i32>,
     pub splittable: Option<bool>,
@@ -283,6 +285,32 @@ pub struct TaskCreateDTO {
     pub locked: Option<bool>,
     pub reassess: bool,
     pub use_ai_estimate: bool,
+}
+impl TaskCreateDTO {
+    fn priority_value(&self) -> Result<Option<i32>, String> {
+        if self
+            .priority
+            .map(|p| !(1..=5).contains(&p))
+            .unwrap_or(false)
+        {
+            return Err("priority must be 1–5 (legacy numeric scale: 5 is highest); prefer priority_level=P1..P5".into());
+        }
+        let labeled = match self.priority_level.as_deref() {
+            None => None,
+            Some("P1") => Some(5),
+            Some("P2") => Some(4),
+            Some("P3") => Some(3),
+            Some("P4") => Some(2),
+            Some("P5") => Some(1),
+            Some(_) => {
+                return Err("priority_level must be P1, P2, P3, P4 or P5; P1 is highest".into())
+            }
+        };
+        if matches!((self.priority, labeled), (Some(a), Some(b)) if a != b) {
+            return Err("priority and priority_level disagree; send only priority_level".into());
+        }
+        Ok(labeled.or(self.priority))
+    }
 }
 #[derive(Debug, Default, Deserialize)]
 pub struct TaskUpdateDTO {
@@ -760,7 +788,7 @@ fn task_json(t: &StoredTask, s: &Snapshot, private: bool) -> Value {
     let mut value = json!({"id":t.id,"title":t.title,"status":t.status,"mode":t.meta.mode,"schedule_state":t.meta.schedule_state,"scheduled_start":blocks.iter().map(|b|b.start).min().map(iso),"scheduled_end":blocks.iter().map(|b|b.end).max().map(iso),"estimated_minutes":t.meta.minutes(&s.state.settings),"blocks":blocks.iter().map(|b|block_json(b)).collect::<Vec<_>>(),"ai_reason":t.meta.unscheduled_reason,"reactions":[],"timezone":s.state.settings.timezone});
     if private {
         let obj = value.as_object_mut().unwrap();
-        for(k,v)in json!({"notes":t.notes,"deadline":t.deadline,"priority":t.meta.priority,"locked":t.meta.locked,"assessment":t.meta.assessment,"remaining_minutes":t.meta.remaining_minutes,"not_before":t.meta.not_before.map(iso),"estimated_override":t.meta.estimated_override,"unscheduled_reason":t.meta.unscheduled_reason,"actual_minutes":t.actual_minutes,"completion_summary":t.completion_summary,"created_at":t.created_at,"updated_at":t.updated_at,"fixed_start":t.meta.fixed_start.map(iso),"fixed_end":t.meta.fixed_end.map(iso),"ai_model":t.meta.assessment.model}).as_object().unwrap(){obj.insert(k.clone(),v.clone());}
+        for(k,v)in json!({"notes":t.notes,"deadline":t.deadline,"priority":t.meta.priority,"priority_level":format!("P{}",6-t.meta.priority),"depends_on":t.meta.depends_on,"locked":t.meta.locked,"assessment":t.meta.assessment,"remaining_minutes":t.meta.remaining_minutes,"not_before":t.meta.not_before.map(iso),"estimated_override":t.meta.estimated_override,"unscheduled_reason":t.meta.unscheduled_reason,"actual_minutes":t.actual_minutes,"completion_summary":t.completion_summary,"created_at":t.created_at,"updated_at":t.updated_at,"fixed_start":t.meta.fixed_start.map(iso),"fixed_end":t.meta.fixed_end.map(iso),"ai_model":t.meta.assessment.model}).as_object().unwrap(){obj.insert(k.clone(),v.clone());}
     }
     value
 }
@@ -790,10 +818,7 @@ async fn assess(
             .difficulty
             .map(|d| !(1..=5).contains(&d))
             .unwrap_or(false)
-        || payload
-            .priority
-            .map(|p| !(1..=5).contains(&p))
-            .unwrap_or(false)
+        || payload.priority_value().is_err()
     {
         return previous.cloned().unwrap_or_default();
     }
@@ -862,11 +887,12 @@ fn apply_fields(payload: &TaskCreateDTO, task: &mut StoredTask, s: &Snapshot) ->
         }
         task.meta.mode = mode.clone();
     }
-    if let Some(priority) = payload.priority {
-        if !(1..=5).contains(&priority) {
-            return Err(bad("priority must be 1–5"));
-        }
+    if let Some(priority) = payload.priority_value().map_err(bad)? {
         task.meta.priority = priority;
+    }
+    if let Some(deps) = &payload.depends_on {
+        task.meta.depends_on = deps.clone();
+        task.meta.depends_on.sort_unstable();
     }
     if payload.use_ai_estimate {
         task.meta.estimated_override = None;
@@ -1027,7 +1053,7 @@ pub async fn add_task(
     let assessment=if payload.mode.as_deref()==Some("fixed"){Assessment{source:"fixed".into(),reason:"User-specified fixed event.".into(),..Assessment::default()}}else{assess(&env,&payload,None,&initial.state.learning.content).await};
     for attempt in 0..2{let before=load(&env).await?;let mut after=before.clone();let id=after.next_task_id;
         let mut task=StoredTask{id,title:String::new(),notes:String::new(),deadline:String::new(),status:"planned".into(),meta:Meta{assessment:assessment.clone(),..Meta::default()},actual_minutes:None,completion_summary:String::new(),created_at:iso(after.now),updated_at:iso(after.now)};
-        apply_fields(&payload,&mut task,&after)?;after.tasks.push(task);rebuild(&mut after);
+        apply_fields(&payload,&mut task,&after)?;after.tasks.push(task);scheduler::validate_dependencies(&after.tasks.iter().map(StoredTask::core).collect::<Vec<_>>()).map_err(bad)?;rebuild(&mut after);
         match commit(&env,&before,&after).await {Ok(())=>{let task=after.tasks.iter().find(|t|t.id==id).unwrap();return Ok(json!({"task":task_json(task,&after,true),"revision":before.revision+1,"planner":{"version":scheduler::VERSION,"reason":task.meta.unscheduled_reason},"ai":{"used":task.meta.assessment.source=="llm","reason":task.meta.unscheduled_reason}}));},Err((StatusCode::CONFLICT,_))if attempt==0=>continue,Err(e)=>return Err(e)}
     }unreachable!()}.await)
 }
@@ -1053,7 +1079,7 @@ pub async fn update_task(
             for block in after.blocks.iter_mut().filter(|b|b.task_id==id && b.occupies()){block.locked=task.meta.locked;}
         }
         let changed=serde_json::to_value(&old.meta).ok()!=serde_json::to_value(&task.meta).ok() || old.deadline!=task.deadline;
-        after.tasks[index]=task;if changed || payload.replan{rebuild(&mut after);}
+        after.tasks[index]=task;scheduler::validate_dependencies(&after.tasks.iter().map(StoredTask::core).collect::<Vec<_>>()).map_err(bad)?;if changed || payload.replan{rebuild(&mut after);}
         match commit(&env,&before,&after).await{Ok(())=>{let task=&after.tasks[index];return Ok(json!({"task":task_json(task,&after,true),"revision":before.revision+1,"ai":{"used":assessment.as_ref().map(|a|a.source=="llm").unwrap_or(false),"reason":task.meta.unscheduled_reason}}));},Err((StatusCode::CONFLICT,_))if attempt==0=>continue,Err(e)=>return Err(e)}
     }unreachable!()}.await)
 }
@@ -1068,6 +1094,9 @@ pub async fn delete_task(
                 let before = load(&env).await?;
                 if !before.tasks.iter().any(|t| t.id == id) {
                     return Err((StatusCode::NOT_FOUND, "task not found".into()));
+                }
+                if before.tasks.iter().any(|t| t.meta.depends_on.contains(&id)) {
+                    return Err(conflict("Other tasks depend on this task; remove their depends_on references before deleting it"));
                 }
                 let mut after = before.clone();
                 after.tasks.retain(|t| t.id != id);
@@ -1248,6 +1277,35 @@ fn apply_review(s: &mut Snapshot, id: i64, p: &ReviewDTO) -> ApiResult<()> {
         }
         let start = parse_input(value, &s.state.settings)?;
         let task = &s.tasks[task_index];
+        if !task.meta.depends_on.is_empty() {
+            let cores: Vec<_> = s.tasks.iter().map(StoredTask::core).collect();
+            let placements = scheduler::plan(
+                &s.state.settings,
+                s.now,
+                s.revision + 1,
+                &cores,
+                &s.blocks,
+                &calendar_classes(s),
+            );
+            for id in &task.meta.depends_on {
+                let completed = s.tasks.iter().any(|t| t.id == *id && t.status == "done");
+                let ready = placements.iter().any(|p| {
+                    p.task_id == *id
+                        && p.state == "scheduled"
+                        && !p.blocks.is_empty()
+                        && p.blocks.iter().all(|b| b.end > s.now && b.end <= start)
+                        && !s
+                            .reviews
+                            .iter()
+                            .any(|r| r.task_id == *id && r.status == "pending")
+                });
+                if !completed && !ready {
+                    return Err(conflict(
+                        "Requested next block must follow completion of all dependency tasks",
+                    ));
+                }
+            }
+        }
         let remaining = task.meta.minutes(&s.state.settings);
         let minutes = if task.meta.assessment.splittable {
             remaining.min(task.meta.assessment.max_chunk_minutes)
@@ -1625,6 +1683,8 @@ pub async fn schedule_tick(env: &Env) {
             promote(&mut after);
             if after.state.last_planned_day
                 != scheduler::local_date(&after.state.settings, after.now).to_string()
+                || (before.reviews != after.reviews
+                    && after.tasks.iter().any(|t| !t.meta.depends_on.is_empty()))
             {
                 rebuild(&mut after);
             }
@@ -1819,6 +1879,88 @@ pub async fn lock_block(
 #[cfg(test)]
 mod deterministic_tests {
     use super::*;
+    #[test]
+    fn explicit_priority_levels_map_without_changing_legacy_numeric_priorities() {
+        for (level, numeric) in [("P1", 5), ("P2", 4), ("P3", 3), ("P4", 2), ("P5", 1)] {
+            let p: TaskCreateDTO = serde_json::from_value(
+                json!({"title":"Test","priority_level":level,"depends_on":[2,3]}),
+            )
+            .unwrap();
+            assert_eq!(p.priority_value().unwrap(), Some(numeric));
+            let mut s = fixture();
+            let mut task = s.tasks[0].clone();
+            apply_fields(&p, &mut task, &s).unwrap();
+            s.tasks[0] = task.clone();
+            let response = task_json(&task, &s, true);
+            assert_eq!(response["priority"], numeric);
+            assert_eq!(response["priority_level"], level);
+            assert_eq!(response["depends_on"], json!([2, 3]));
+            let public = task_json(&task, &s, false);
+            assert!(public.get("depends_on").is_none());
+            let legacy: TaskCreateDTO =
+                serde_json::from_value(json!({"priority":numeric})).unwrap();
+            assert_eq!(legacy.priority_value().unwrap(), Some(numeric));
+            let update: TaskUpdateDTO = serde_json::from_value(
+                json!({"title":"Test","priority_level":level,"depends_on":[],"replan":true}),
+            )
+            .unwrap();
+            assert_eq!(update.task.priority_value().unwrap(), Some(numeric));
+            assert_eq!(update.task.depends_on, Some(vec![]));
+        }
+        for value in [
+            json!({"priority_level":"P0"}),
+            json!({"priority_level":"P1","priority":1}),
+            json!({"priority":0}),
+        ] {
+            assert!(serde_json::from_value::<TaskCreateDTO>(value)
+                .unwrap()
+                .priority_value()
+                .is_err());
+        }
+        let notes_only: TaskCreateDTO = serde_json::from_value(json!({"notes":"P1 P2"})).unwrap();
+        assert_eq!(notes_only.priority_value().unwrap(), None);
+        assert!(serde_json::from_str::<Meta>("{}")
+            .unwrap()
+            .depends_on
+            .is_empty());
+    }
+    #[test]
+    fn dependency_edits_preserve_omitted_fields_and_clear_with_empty_list() {
+        let s = fixture();
+        let mut task = s.tasks[0].clone();
+        task.meta.depends_on = vec![2];
+        task.meta.priority = 5;
+        let p: TaskCreateDTO = serde_json::from_value(json!({"title":"Edited"})).unwrap();
+        apply_fields(&p, &mut task, &s).unwrap();
+        assert_eq!(task.meta.depends_on, vec![2]);
+        assert_eq!(task.meta.priority, 5);
+        let p: TaskCreateDTO =
+            serde_json::from_value(json!({"title":"Edited","depends_on":[]})).unwrap();
+        apply_fields(&p, &mut task, &s).unwrap();
+        assert!(task.meta.depends_on.is_empty());
+    }
+    #[test]
+    fn manually_pinned_resume_cannot_bypass_unfinished_prerequisites() {
+        let mut s = fixture();
+        let mut parent = s.tasks[0].clone();
+        parent.id = 2;
+        parent.status = "planned".into();
+        parent.meta.estimated_override = Some(20160);
+        parent.meta.remaining_minutes = None;
+        s.tasks.push(parent);
+        s.tasks[0].meta.depends_on = vec![2];
+        let p = ReviewDTO {
+            outcome: "deferred".into(),
+            task_completed: Some(false),
+            remaining_minutes: Some(30),
+            block_id: Some("old".into()),
+            next_start: Some("2026-10-20T10:00".into()),
+            ..ReviewDTO::default()
+        };
+        let error = apply_review(&mut s, 1, &p).unwrap_err();
+        assert_eq!(error.0, StatusCode::CONFLICT);
+        assert!(error.1.contains("dependency"));
+    }
     fn stamp(value: &str) -> i64 {
         parse_iso(value).unwrap().unix_timestamp()
     }

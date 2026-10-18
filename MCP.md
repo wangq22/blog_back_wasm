@@ -14,6 +14,21 @@ assesses task parameters; the same deterministic Rust scheduler used by
 See [SCHEDULER.md](SCHEDULER.md) for migration 0009, review semantics and defaults.
 The source timetable image is never uploaded.
 
+## Explicit priorities and dependencies
+
+Use `priority_level` for P1/P2: **P1 is highest**, P3 is the default, P5 is lowest. Do not encode priority only in `notes`. The old numeric `priority` remains compatible (5 highest); responses return both `priority` and `priority_level`.
+
+Create the prerequisite first, then use its returned ID:
+
+```json
+{"name":"create_task","arguments":{"title":"Design A","priority_level":"P2"}}
+{"name":"create_task","arguments":{"title":"Implement A","priority_level":"P1","depends_on":[123]}}
+```
+
+Replace `123` with the design task's actual ID. Use `list_tasks` for existing IDs. The implementation starts after **all** design work blocks finish, even with higher priority. Multiple IDs require every predecessor to finish. Missing, cyclic or self dependencies are rejected; unavailable or unreviewed predecessors leave successors waiting. Fixed and protected conflicting times are retained and flagged.
+
+`update_task` accepts the same fields. Omitted `depends_on` preserves prerequisites; `[]` clears them. Remove dependent references before deleting a predecessor. No new migration is required for these fields. After deploying the backend, refresh the MCP client's tool definitions so it discovers the new arguments. Existing notes containing P1/P2 are not retroactively converted; update those tasks explicitly.
+
 ## First deployment
 
 Apply the migration and set the owner approval secret before deploying:
